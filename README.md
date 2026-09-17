@@ -1,5 +1,7 @@
 # Sommeil
 
+> 🤖 Vibecodé avec [Claude Code](https://claude.com/claude-code) — la quasi-totalité du code a été générée par IA.
+
 Application Android qui affiche une année de sommeil et de pas sous forme de grille façon GitHub :
 plus la nuit est longue (ou la journée active), plus la case est verte ; plus elle est courte, plus elle tire vers le rouge.
 
