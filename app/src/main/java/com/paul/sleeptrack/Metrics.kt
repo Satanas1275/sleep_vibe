@@ -30,8 +30,8 @@ data class HealthData(
     )
 }
 
-enum class Metric(val label: String, val detailLabel: String) {
-    SLEEP("Sommeil", "Sommeil"),
+enum class Metric(val label: String, val detailLabel: String, val canHide: Boolean = true) {
+    SLEEP("Sommeil", "Sommeil", canHide = false),
     STEPS("Pas", "Pas"),
     HEART("Cœur", "Cœur au repos"),
     WEIGHT("Poids", "Poids"),

@@ -17,8 +17,11 @@ Les données viennent de [Health Connect](https://health.google/health-connect-a
   et la nuit qui la suit, avec la comparaison « après 8 000 pas ou plus » contre « après une journée calme ».
 - **Rappels** (optionnels) : rappel du soir quand la moyenne des 7 derniers jours passe sous l'objectif,
   et résumé du dimanche comparant la semaine à la précédente. Calculés sur le téléphone.
-- **Widget** d'écran d'accueil : les dernières semaines de la métrique sélectionnée dans l'app.
+- **Widget** d'écran d'accueil : les dernières semaines de la métrique choisie dans les réglages,
+  redimensionnable de 4x2 jusqu'à 2x1 (l'en-tête s'efface quand la tuile est trop plate).
 - **Partage** : export de la grille de l'année en PNG, via le sélecteur de partage Android.
+- **Métriques masquables** : pas, cœur au repos et poids se retirent du menu principal depuis les
+  réglages ; leurs autorisations ne sont alors plus réclamées. Le sommeil reste toujours affiché.
 - Mode démo si Health Connect n'est pas disponible.
 
 ## Échelles de couleurs

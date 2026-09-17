@@ -36,7 +36,7 @@ fun renderStrip(
     heightPx: Int,
     today: LocalDate = LocalDate.now(),
 ): Bitmap {
-    val bmp = Bitmap.createBitmap(widthPx.coerceAtLeast(120), heightPx.coerceAtLeast(80), Bitmap.Config.ARGB_8888)
+    val bmp = Bitmap.createBitmap(widthPx.coerceAtLeast(100), heightPx.coerceAtLeast(60), Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bmp)
     val w = bmp.width.toFloat()
     val h = bmp.height.toFloat()
@@ -44,12 +44,15 @@ fun renderStrip(
     canvas.drawRoundRect(RectF(0f, 0f, w, h), radius, radius, paint(Palette.bg.toArgb()))
 
     val pad = h * 0.09f
-    val headerSize = (h * 0.15f).coerceIn(22f, 44f)
-    val header = headerSize * 1.6f
+    // Sous ~55dp de haut, l'en-tête mangerait la moitié de la tuile : la grille seule.
+    val compact = h < 170f
+    // La taille du titre suit aussi la largeur, sinon un widget 2x2 ne peut rien afficher d'autre.
+    val headerSize = if (compact) 0f else minOf(h * 0.15f, w * 0.09f).coerceIn(20f, 44f)
+    val header = if (compact) 0f else headerSize * 1.6f
     val gridTop = pad + header
     val pitch = (h - pad - gridTop) / 7f
     val side = pitch * 0.82f
-    val weeks = (((w - 2 * pad) / pitch).toInt()).coerceIn(4, 40)
+    val weeks = (((w - 2 * pad) / pitch).toInt()).coerceIn(3, 40)
 
     val series = data.series(metric)
     val scale = scaleFor(metric, data)
@@ -57,17 +60,19 @@ fun renderStrip(
     val gridStart = lastMonday.minusWeeks((weeks - 1).toLong())
     val shown = series.filterKeys { it >= gridStart && !it.isAfter(today) }
 
-    val title = metric.label
-    val summary = if (shown.isEmpty()) "aucune donnée" else {
-        "moy. " + metric.format(shown.values.average())
-    }
-    val titlePaint = paint(Palette.text.toArgb(), headerSize, bold = true)
-    canvas.drawText(title, pad, pad + headerSize, titlePaint)
-    val summaryPaint = paint(Palette.muted.toArgb(), headerSize * 0.85f)
-    val summaryX = w - pad - summaryPaint.measureText(summary)
-    // Sur un widget étroit le résumé mordrait sur le titre : dans ce cas on le laisse tomber.
-    if (summaryX > pad + titlePaint.measureText(title) + headerSize * 0.5f) {
-        canvas.drawText(summary, summaryX, pad + headerSize, summaryPaint)
+    if (!compact) {
+        val title = metric.label
+        val summary = if (shown.isEmpty()) "aucune donnée" else {
+            "moy. " + metric.format(shown.values.average())
+        }
+        val titlePaint = paint(Palette.text.toArgb(), headerSize, bold = true)
+        canvas.drawText(title, pad, pad + headerSize, titlePaint)
+        val summaryPaint = paint(Palette.muted.toArgb(), headerSize * 0.85f)
+        val summaryX = w - pad - summaryPaint.measureText(summary)
+        // Sur un widget étroit le résumé mordrait sur le titre : dans ce cas on le laisse tomber.
+        if (summaryX > pad + titlePaint.measureText(title) + headerSize * 0.5f) {
+            canvas.drawText(summary, summaryX, pad + headerSize, summaryPaint)
+        }
     }
 
     val gridWidth = weeks * pitch

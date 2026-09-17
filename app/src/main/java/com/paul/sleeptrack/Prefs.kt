@@ -6,7 +6,7 @@ import org.json.JSONObject
 import java.time.Duration
 import java.time.LocalDate
 
-/** Réglages de l'app : rappels, objectif, métrique affichée par le widget. */
+/** Réglages de l'app : rappels, objectif, métriques visibles, métrique du widget. */
 object Prefs {
     private const val FILE = "sommeil"
 
@@ -16,6 +16,8 @@ object Prefs {
     const val WEEKLY_HOUR = "weekly_hour"
     const val GOAL_MINUTES = "goal_minutes"
     const val WIDGET_METRIC = "widget_metric"
+    const val HIDDEN_METRICS = "hidden_metrics"
+    const val LAST_METRIC = "last_metric"
 
     const val DEFAULT_EVENING_HOUR = 22
     const val DEFAULT_WEEKLY_HOUR = 19
@@ -31,12 +33,44 @@ object Prefs {
     fun goalMinutes(context: Context) = of(context).getInt(GOAL_MINUTES, DEFAULT_GOAL_MINUTES)
     fun goal(context: Context): Duration = Duration.ofMinutes(goalMinutes(context).toLong())
 
-    fun widgetMetric(context: Context): Metric =
-        runCatching { Metric.valueOf(of(context).getString(WIDGET_METRIC, null) ?: "") }
-            .getOrDefault(Metric.SLEEP)
+    /** Les métriques montrées dans l'app. Le sommeil ne se masque pas : c'est le sujet. */
+    fun visibleMetrics(context: Context): List<Metric> {
+        val hidden = of(context).getStringSet(HIDDEN_METRICS, emptySet()).orEmpty()
+        return Metric.entries.filter { !it.canHide || it.name !in hidden }
+    }
+
+    fun isVisible(context: Context, metric: Metric) = metric in visibleMetrics(context)
+
+    fun setVisible(context: Context, metric: Metric, visible: Boolean) {
+        if (!metric.canHide) return
+        val hidden = of(context).getStringSet(HIDDEN_METRICS, emptySet()).orEmpty().toMutableSet()
+        if (visible) hidden -= metric.name else hidden += metric.name
+        of(context).edit().putStringSet(HIDDEN_METRICS, hidden).apply()
+        // Une métrique masquée ne peut plus être ni l'onglet ouvert, ni celle du widget.
+        if (!visible) {
+            if (widgetMetric(context) == metric) setWidgetMetric(context, Metric.SLEEP)
+            if (lastMetric(context) == metric) setLastMetric(context, Metric.SLEEP)
+        }
+    }
+
+    /** Onglet rouvert au prochain lancement. */
+    fun lastMetric(context: Context): Metric = storedMetric(context, LAST_METRIC)
+
+    fun setLastMetric(context: Context, metric: Metric) {
+        of(context).edit().putString(LAST_METRIC, metric.name).apply()
+    }
+
+    /** Métrique dessinée par le widget, choisie dans les réglages. */
+    fun widgetMetric(context: Context): Metric = storedMetric(context, WIDGET_METRIC)
 
     fun setWidgetMetric(context: Context, metric: Metric) {
         of(context).edit().putString(WIDGET_METRIC, metric.name).apply()
+    }
+
+    private fun storedMetric(context: Context, key: String): Metric {
+        val stored = runCatching { Metric.valueOf(of(context).getString(key, null) ?: "") }
+            .getOrDefault(Metric.SLEEP)
+        return if (isVisible(context, stored)) stored else Metric.SLEEP
     }
 }
 
