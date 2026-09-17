@@ -45,8 +45,8 @@ private fun renderWidget(context: Context, manager: AppWidgetManager, appWidgetI
 
     // Les RemoteViews transportent le bitmap : on plafonne sa taille pour rester
     // largement sous la limite de transaction du système.
-    val widthPx = (widthDp * density).toInt().coerceIn(160, 1_000)
-    val heightPx = (heightDp * density).toInt().coerceIn(80, 600)
+    val widthPx = (widthDp * density).toInt().coerceIn(120, 1_000)
+    val heightPx = (heightDp * density).toInt().coerceIn(60, 600)
 
     val metric = Prefs.widgetMetric(context)
     val bitmap = renderStrip(metric, DataCache.load(context), widthPx, heightPx)

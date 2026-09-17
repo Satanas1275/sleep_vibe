@@ -36,6 +36,10 @@ val DATA_PERMISSIONS = mapOf(
 val REQUESTED_PERMISSIONS =
     DATA_PERMISSIONS.values.toSet() + PERMISSION_READ_HISTORY + PERMISSION_READ_BACKGROUND
 
+/** Ce qu'on demande vraiment : inutile de réclamer le poids si l'utilisateur l'a masqué. */
+fun requestedPermissions(visible: List<Metric>): Set<String> =
+    visible.mapNotNull { DATA_PERMISSIONS[it] }.toSet() + PERMISSION_READ_HISTORY + PERMISSION_READ_BACKGROUND
+
 private val NOT_ASLEEP = setOf(
     SleepSessionRecord.STAGE_TYPE_AWAKE,
     SleepSessionRecord.STAGE_TYPE_OUT_OF_BED,

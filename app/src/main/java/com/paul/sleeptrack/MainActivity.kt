@@ -59,7 +59,8 @@ private sealed interface UiState {
 private fun SleepApp() {
     val context = LocalContext.current
     var year by remember { mutableIntStateOf(LocalDate.now().year) }
-    var metric by remember { mutableStateOf(Prefs.widgetMetric(context)) }
+    var metric by remember { mutableStateOf(Prefs.lastMetric(context)) }
+    var visibleMetrics by remember { mutableStateOf(Prefs.visibleMetrics(context)) }
     var demo by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
@@ -111,7 +112,12 @@ private fun SleepApp() {
         when {
             settings -> SettingsScreen(
                 data = (state as? UiState.Ready)?.data ?: DataCache.load(context),
-                onBack = { settings = false },
+                onBack = {
+                    settings = false
+                    visibleMetrics = Prefs.visibleMetrics(context)
+                    if (metric !in visibleMetrics) metric = Metric.SLEEP
+                    updateAllWidgets(context)
+                },
             )
             else -> when (val s = state) {
                 UiState.Loading -> Box(Modifier.fillMaxWidth().padding(top = 120.dp), Alignment.Center) {
@@ -134,7 +140,7 @@ private fun SleepApp() {
                     body = "Sommeil lit tes nuits, tes pas, ton cœur au repos et ton poids dans Health " +
                         "Connect pour dessiner tes grilles. Rien ne quitte ton téléphone.",
                     action = "Autoriser l'accès",
-                    onAction = { permissionLauncher.launch(REQUESTED_PERMISSIONS) },
+                    onAction = { permissionLauncher.launch(requestedPermissions(visibleMetrics)) },
                     onDemo = { demo = true },
                 )
                 is UiState.Error -> Message(
@@ -147,16 +153,16 @@ private fun SleepApp() {
                 is UiState.Ready -> MainScreen(
                     year = year,
                     metric = metric,
+                    visibleMetrics = visibleMetrics,
                     data = s.data,
                     missing = s.missing,
                     demo = demo,
                     onYear = { year = it },
                     onMetric = {
                         metric = it
-                        Prefs.setWidgetMetric(context, it)
-                        updateAllWidgets(context)
+                        Prefs.setLastMetric(context, it)
                     },
-                    onRequestPermissions = { permissionLauncher.launch(REQUESTED_PERMISSIONS) },
+                    onRequestPermissions = { permissionLauncher.launch(requestedPermissions(visibleMetrics)) },
                     onExitDemo = { demo = false },
                     onSettings = { settings = true },
                 )
@@ -169,6 +175,7 @@ private fun SleepApp() {
 private fun MainScreen(
     year: Int,
     metric: Metric,
+    visibleMetrics: List<Metric>,
     data: HealthData,
     missing: Set<String>,
     demo: Boolean,
@@ -203,7 +210,7 @@ private fun MainScreen(
             }
         }
 
-        MetricSwitch(metric, onMetric)
+        if (visibleMetrics.size > 1) MetricSwitch(metric, visibleMetrics, onMetric)
 
         Panel {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -224,7 +231,7 @@ private fun MainScreen(
             }
         }
 
-        selected?.let { day -> DayDetail(day, data) }
+        selected?.let { day -> DayDetail(day, data, visibleMetrics) }
 
         if (series.isEmpty()) {
             EmptyNote("Aucune donnée « ${metric.label.lowercase()} » pour cette année.")
@@ -234,14 +241,17 @@ private fun MainScreen(
             StatRow(tiles[2], tiles[3])
         }
 
-        if (data.steps.isNotEmpty() && data.nights.isNotEmpty()) {
+        if (Metric.STEPS in visibleMetrics && data.steps.isNotEmpty() && data.nights.isNotEmpty()) {
             Panel { CorrelationPanel(data) }
         }
 
-        if (missing.isNotEmpty() && !demo) {
+        val relevantMissing = remember(missing, visibleMetrics) {
+            requestedPermissions(visibleMetrics).intersect(missing)
+        }
+        if (relevantMissing.isNotEmpty() && !demo) {
             Panel {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(missingText(missing), color = Palette.muted, fontSize = 13.sp)
+                    Text(missingText(relevantMissing), color = Palette.muted, fontSize = 13.sp)
                     OutlinedButton(onClick = onRequestPermissions) {
                         Text("Compléter les autorisations", color = Palette.text)
                     }
@@ -269,7 +279,7 @@ private fun missingText(missing: Set<String>): String {
 }
 
 @Composable
-private fun MetricSwitch(metric: Metric, onMetric: (Metric) -> Unit) {
+private fun MetricSwitch(metric: Metric, entries: List<Metric>, onMetric: (Metric) -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -277,7 +287,7 @@ private fun MetricSwitch(metric: Metric, onMetric: (Metric) -> Unit) {
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Metric.entries.forEach { entry ->
+        entries.forEach { entry ->
             val active = entry == metric
             Box(
                 Modifier
@@ -325,7 +335,7 @@ private fun Panel(content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun DayDetail(day: LocalDate, data: HealthData) {
+private fun DayDetail(day: LocalDate, data: HealthData, visibleMetrics: List<Metric>) {
     Panel {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
@@ -333,7 +343,7 @@ private fun DayDetail(day: LocalDate, data: HealthData) {
                 color = Palette.text,
                 fontWeight = FontWeight.SemiBold,
             )
-            Metric.entries.forEach { entry ->
+            visibleMetrics.forEach { entry ->
                 val value = data.series(entry)[day]
                 DetailLine(
                     entry.detailLabel,
@@ -409,6 +419,8 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     var weeklyHour by remember { mutableIntStateOf(Prefs.weeklyHour(context)) }
     var goal by remember { mutableIntStateOf(Prefs.goalMinutes(context)) }
     var pendingSwitch by remember { mutableStateOf<String?>(null) }
+    var visible by remember { mutableStateOf(Prefs.visibleMetrics(context)) }
+    var widgetMetric by remember { mutableStateOf(Prefs.widgetMetric(context)) }
 
     fun persist() {
         Prefs.of(context).edit()
@@ -511,15 +523,52 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
         }
 
         Panel {
-            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Métriques affichées", color = Palette.text, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Masquer une métrique la retire des onglets, du détail d'une journée " +
+                        "et des autorisations réclamées.",
+                    color = Palette.muted,
+                    fontSize = 12.sp,
+                )
+                Metric.entries.filter { it.canHide }.forEach { entry ->
+                    SettingSwitch(
+                        title = entry.detailLabel,
+                        subtitle = if (entry == Metric.STEPS) {
+                            "Masquer retire aussi le panneau « activité et sommeil »"
+                        } else {
+                            "Visible dans le menu principal"
+                        },
+                        checked = entry in visible,
+                        onChange = { on ->
+                            Prefs.setVisible(context, entry, on)
+                            visible = Prefs.visibleMetrics(context)
+                            widgetMetric = Prefs.widgetMetric(context)
+                        },
+                    )
+                }
+                Text(
+                    "Le sommeil reste toujours affiché : c'est le sujet de l'app.",
+                    color = Palette.muted.copy(alpha = 0.7f),
+                    fontSize = 11.sp,
+                )
+            }
+        }
+
+        Panel {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Widget", color = Palette.text, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "Ajoute « Sommeil » depuis l'écran des widgets. Il affiche les dernières " +
-                        "semaines de la métrique sélectionnée dans l'app — actuellement " +
-                        "« ${Prefs.widgetMetric(context).label.lowercase()} ».",
+                    "Ce que le widget affiche. Ajoute « Sommeil » depuis l'écran des widgets ; " +
+                        "il se redimensionne de 4x2 jusqu'à 2x1.",
                     color = Palette.muted,
                     fontSize = 13.sp,
                 )
+                MetricSwitch(widgetMetric, visible) {
+                    widgetMetric = it
+                    Prefs.setWidgetMetric(context, it)
+                    updateAllWidgets(context)
+                }
                 OutlinedButton(onClick = { updateAllWidgets(context) }) {
                     Text("Rafraîchir le widget", color = Palette.text)
                 }

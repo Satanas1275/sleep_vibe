@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  Taille par défaut 4x2, redimensionnable jusqu'à 2x1 (110dp = 2 colonnes, 40dp = 1 ligne,
+  selon la formule 70*n - 30). Le rendu s'adapte : moins de semaines quand c'est étroit,
+  et l'en-tête disparaît quand c'est trop plat pour lui.
+-->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="250dp"
-    android:minHeight="110dp"
-    android:minResizeWidth="180dp"
-    android:minResizeHeight="70dp"
+    android:minWidth="110dp"
+    android:minHeight="40dp"
+    android:minResizeWidth="110dp"
+    android:minResizeHeight="40dp"
     android:targetCellWidth="4"
     android:targetCellHeight="2"
     android:resizeMode="horizontal|vertical"
