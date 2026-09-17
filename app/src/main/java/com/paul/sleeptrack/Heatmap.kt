@@ -19,7 +19,6 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.DayOfWeek
-import java.time.Duration
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
@@ -42,31 +41,17 @@ object Palette {
         Color(0xFF8BD17C),
         Color(0xFF2ECC71),
     )
+
+    // Le poids n'a pas de « bon » côté : dégradé neutre, du plus léger au plus lourd.
+    val weightRamp = listOf(
+        Color(0xFFA8E4F2),
+        Color(0xFF6FC3E0),
+        Color(0xFF4A95C7),
+        Color(0xFF3A6BA8),
+        Color(0xFF2E4685),
+    )
+
     val longDate: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.FRENCH)
-}
-
-enum class Metric(val label: String, val legend: List<String>) {
-    SLEEP("Sommeil", listOf("<5h", "5-6h", "6-7h", "7-8h", "8h+")),
-    STEPS("Pas", listOf("<3k", "3-6k", "6-8k", "8-10k", "10k+")),
-}
-
-fun colorFor(d: Duration): Color {
-    val minutes = d.toMinutes()
-    return when {
-        minutes < 5 * 60 -> Palette.levels[0]
-        minutes < 6 * 60 -> Palette.levels[1]
-        minutes < 7 * 60 -> Palette.levels[2]
-        minutes < 8 * 60 -> Palette.levels[3]
-        else -> Palette.levels[4]
-    }
-}
-
-fun colorForSteps(steps: Long): Color = when {
-    steps < 3_000 -> Palette.levels[0]
-    steps < 6_000 -> Palette.levels[1]
-    steps < 8_000 -> Palette.levels[2]
-    steps < 10_000 -> Palette.levels[3]
-    else -> Palette.levels[4]
 }
 
 private val DAY_LABELS = listOf("Lun", "", "Mer", "", "Ven", "", "Dim")
@@ -152,14 +137,14 @@ fun YearHeatmap(
 }
 
 @Composable
-fun Legend(metric: Metric) {
+fun Legend(metric: Metric, scale: Scale) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(metric.label, color = Palette.muted, fontSize = 12.sp)
         Spacer(Modifier.weight(1f))
-        Palette.levels.zip(metric.legend).forEach { (color, label) ->
+        scale.colors.zip(scale.labels).forEach { (color, label) ->
             Box(Modifier.size(10.dp).background(color, RoundedCornerShape(3.dp)))
             Spacer(Modifier.width(3.dp))
-            Text(label, color = Palette.muted, fontSize = 10.sp)
+            Text(label, color = Palette.muted, fontSize = 10.sp, maxLines = 1, softWrap = false)
             Spacer(Modifier.width(6.dp))
         }
     }
