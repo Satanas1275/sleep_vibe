@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.SleepTrack" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+    </style>
+    <color name="bg">#0D0D0D</color>
+</resources>
