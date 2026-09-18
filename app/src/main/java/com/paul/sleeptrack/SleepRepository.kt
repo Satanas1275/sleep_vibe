@@ -10,6 +10,7 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -133,7 +134,13 @@ suspend fun readStepsByDay(
     val out = mutableMapOf<LocalDate, Long>()
     val limit = minOf(to.plusDays(1), LocalDate.now(zone).plusDays(1))
     var chunkStart = from
+    var first = true
     while (chunkStart.isBefore(limit)) {
+        // Une année complète, c'est jusqu'à 12 appels d'affilée ; un petit espacement
+        // évite de déclencher le rate limiter interne de Health Connect quand cette
+        // lecture s'ajoute à celles du sommeil/cœur/poids dans le même chargement.
+        if (!first) delay(120)
+        first = false
         val chunkEnd = minOf(chunkStart.plusMonths(1), limit)
         val groups = client.aggregateGroupByPeriod(
             AggregateGroupByPeriodRequest(
