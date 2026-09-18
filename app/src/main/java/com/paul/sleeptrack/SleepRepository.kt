@@ -10,6 +10,7 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -49,21 +50,27 @@ private val NOT_ASLEEP = setOf(
     SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
 )
 
-/** Réessaie un appel Health Connect qui se fait jeter par le rate limiter
- *  (IllegalStateException — voir la doc officielle Health Connect, c'est ce
- *  qu'elle catch dans son propre exemple de backoff) au lieu de remonter
- *  l'erreur direct à l'écran. Backoff exponentiel court : 3 essais max. */
-private suspend fun <T> retryOnRateLimit(maxAttempts: Int = 3, block: suspend () -> T): T {
+/** Réessaie un appel Health Connect qui se fait jeter par le rate limiter, au lieu de
+ *  remonter l'erreur direct à l'écran. On ne connaît pas la classe exacte de
+ *  l'exception que la lib remonte pour un rate limit (ni HealthConnectException, ni
+ *  IllegalStateException ne correspondent en pratique — testé), donc on détecte plutôt
+ *  sur le contenu du message. Toute autre erreur est relancée immédiatement, sans
+ *  retry inutile. Backoff progressif, 4 essais max. */
+private suspend fun <T> retryOnRateLimit(maxAttempts: Int = 4, block: suspend () -> T): T {
     var attempt = 0
-    var backoff = 400L
+    var backoff = 800L
     while (true) {
         try {
             return block()
-        } catch (e: IllegalStateException) {
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            val isRateLimit = e.message?.contains("rate limit", ignoreCase = true) == true ||
+                e.message?.contains("quota", ignoreCase = true) == true
             attempt++
-            if (attempt >= maxAttempts) throw e
+            if (!isRateLimit || attempt >= maxAttempts) throw e
             delay(backoff)
-            backoff *= 3
+            backoff = (backoff * 2.5).toLong()
         }
     }
 }

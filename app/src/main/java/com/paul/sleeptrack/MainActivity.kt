@@ -118,13 +118,17 @@ private fun SleepApp() {
             // on ne doit surtout pas continuer à écrire dans `state` après coup, sous
             // peine de "The coroutine scope left the composition".
             throw e
-        } catch (e: IllegalStateException) {
-            // D'après la doc Health Connect, IllegalStateException couvre à la fois le
-            // rate limit et un service Health Connect indisponible ; pas moyen de les
-            // distinguer proprement, donc un message qui couvre les deux cas.
-            UiState.Error("Health Connect n'a pas pu répondre (trop de requêtes ou service indisponible). Réessaie dans quelques secondes.")
         } catch (e: Exception) {
-            UiState.Error(e.message ?: e.javaClass.simpleName)
+            // On arrive ici seulement si retryOnRateLimit (dans SleepRepository) a
+            // épuisé ses tentatives : un vrai rate limit persistant, ou une autre
+            // erreur. Message dédié dans le premier cas, message brut sinon.
+            val isRateLimit = e.message?.contains("rate limit", ignoreCase = true) == true ||
+                e.message?.contains("quota", ignoreCase = true) == true
+            if (isRateLimit) {
+                UiState.Error("Health Connect a limité les requêtes plus longtemps que prévu. Attends un peu avant de réessayer.")
+            } else {
+                UiState.Error(e.message ?: e.javaClass.simpleName)
+            }
         }
     }
 
