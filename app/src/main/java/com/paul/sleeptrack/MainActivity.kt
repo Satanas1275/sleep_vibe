@@ -2,6 +2,7 @@ package com.paul.sleeptrack
 
 import android.Manifest
 import android.content.Intent
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -30,6 +32,9 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Duration
 import java.time.LocalDate
 
@@ -64,6 +69,7 @@ private fun SleepApp() {
     var demo by remember { mutableStateOf(false) }
     var settings by remember { mutableStateOf(false) }
     var refreshKey by remember { mutableIntStateOf(0) }
+    var display by remember { mutableStateOf(Prefs.display(context)) }
     var state by remember { mutableStateOf<UiState>(UiState.Loading) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -77,17 +83,27 @@ private fun SleepApp() {
             state = UiState.Ready(demoHealthData(year), emptySet())
             return@LaunchedEffect
         }
+        // Ce que l'app a déjà lu ou importé : de quoi afficher une année même si Health
+        // Connect ne la restitue plus, ou pas encore.
+        val archived = withContext(Dispatchers.IO) { Archive.load(context).filterYear(year) }
         if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) {
-            state = UiState.NotInstalled
+            state = if (archived.isEmpty()) UiState.NotInstalled else UiState.Ready(archived, emptySet())
             return@LaunchedEffect
         }
         val client = HealthConnectClient.getOrCreate(context)
         state = try {
             val granted = client.permissionController.getGrantedPermissions()
             if (DATA_PERMISSIONS.values.none { it in granted }) {
-                UiState.NeedsPermission
+                if (archived.isEmpty()) {
+                    UiState.NeedsPermission
+                } else {
+                    UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
+                }
             } else {
-                val data = loadYear(client, granted, year)
+                // Health Connect a le dernier mot sur les jours qu'il connaît ; l'archive
+                // comble le reste.
+                val data = archived + loadYear(client, granted, year)
+                withContext(Dispatchers.IO) { Archive.merge(context, data) }
                 // Le widget et les rappels lisent ce cache : on le rafraîchit à chaque
                 // passage sur l'année en cours.
                 if (year == LocalDate.now().year) {
@@ -115,8 +131,11 @@ private fun SleepApp() {
                 onBack = {
                     settings = false
                     visibleMetrics = Prefs.visibleMetrics(context)
+                    display = Prefs.display(context)
                     if (metric !in visibleMetrics) metric = Metric.SLEEP
                     updateAllWidgets(context)
+                    // Un import a pu enrichir l'archive : on relit.
+                    refreshKey++
                 },
             )
             else -> when (val s = state) {
@@ -154,6 +173,7 @@ private fun SleepApp() {
                     year = year,
                     metric = metric,
                     visibleMetrics = visibleMetrics,
+                    display = display,
                     data = s.data,
                     missing = s.missing,
                     demo = demo,
@@ -176,6 +196,7 @@ private fun MainScreen(
     year: Int,
     metric: Metric,
     visibleMetrics: List<Metric>,
+    display: DisplayPrefs,
     data: HealthData,
     missing: Set<String>,
     demo: Boolean,
@@ -190,6 +211,18 @@ private fun MainScreen(
     val currentYear = LocalDate.now().year
     val scale = remember(metric, data) { scaleFor(metric, data) }
     val series = remember(metric, data) { data.series(metric) }
+    val config = LocalConfiguration.current
+    // À l'horizontale, l'écran est large et court : on donne aux cases la hauteur
+    // disponible et la grille défile latéralement.
+    val minPitch = remember(config.orientation, config.screenHeightDp, display) {
+        val landscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val fromHeight = if (landscape && display.landscapeBig) {
+            ((config.screenHeightDp - 150) / 7).coerceIn(14, 30)
+        } else {
+            0
+        }
+        maxOf(display.cellSize, fromHeight).dp
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -226,23 +259,26 @@ private fun MainScreen(
                     selected = selected,
                     onSelect = { selected = it },
                     colorAt = { day -> series[day]?.let(scale::colorOf) },
+                    minPitch = minPitch,
                 )
-                Legend(metric, scale)
+                if (display.legend) Legend(metric, scale)
             }
         }
 
         selected?.let { day -> DayDetail(day, data, visibleMetrics) }
 
         if (series.isEmpty()) {
-            EmptyNote("Aucune donnée « ${metric.label.lowercase()} » pour cette année.")
-        } else {
+            if (display.notes) EmptyNote("Aucune donnée « ${metric.label.lowercase()} » pour cette année.")
+        } else if (display.stats) {
             val tiles = statTiles(metric, data, scale)
             StatRow(tiles[0], tiles[1])
             StatRow(tiles[2], tiles[3])
         }
 
-        if (Metric.STEPS in visibleMetrics && data.steps.isNotEmpty() && data.nights.isNotEmpty()) {
-            Panel { CorrelationPanel(data) }
+        if (display.correlation && Metric.STEPS in visibleMetrics &&
+            data.steps.isNotEmpty() && data.nights.isNotEmpty()
+        ) {
+            Panel { CorrelationPanel(data, showNotes = display.notes) }
         }
 
         val relevantMissing = remember(missing, visibleMetrics) {
@@ -421,6 +457,52 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     var pendingSwitch by remember { mutableStateOf<String?>(null) }
     var visible by remember { mutableStateOf(Prefs.visibleMetrics(context)) }
     var widgetMetric by remember { mutableStateOf(Prefs.widgetMetric(context)) }
+    var display by remember { mutableStateOf(Prefs.display(context)) }
+    var backupStatus by remember { mutableStateOf<String?>(null) }
+    var confirmClear by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            backupStatus = runCatching {
+                withContext(Dispatchers.IO) {
+                    // On verse d'abord l'année affichée dans l'archive : l'export porte
+                    // alors tout ce que l'app connaît, pas seulement l'écran ouvert.
+                    exportBackup(context, uri, Archive.merge(context, data))
+                }
+            }.fold(
+                { "Exporté : $it jours dans le fichier choisi." },
+                { "Export impossible (${it.message ?: "erreur inconnue"})." },
+            )
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            backupStatus = runCatching {
+                withContext(Dispatchers.IO) {
+                    val imported = importBackup(context, uri)
+                    Archive.merge(context, imported)
+                    dayCount(imported)
+                }
+            }.fold(
+                { days ->
+                    if (days == 0) {
+                        "Aucun jour reconnu dans ce fichier."
+                    } else {
+                        "Importé : $days jours ajoutés à l'historique."
+                    }
+                },
+                { "Import impossible (${it.message ?: "fichier illisible"})." },
+            )
+        }
+    }
 
     fun persist() {
         Prefs.of(context).edit()
@@ -575,9 +657,118 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
             }
         }
 
+        Panel {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Affichage", color = Palette.text, fontWeight = FontWeight.SemiBold)
+                SettingSwitch(
+                    title = "Statistiques",
+                    subtitle = "Les quatre tuiles chiffrées sous la grille",
+                    checked = display.stats,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_STATS, on)
+                    display = Prefs.display(context)
+                }
+                SettingSwitch(
+                    title = "Légende des couleurs",
+                    subtitle = "La bande de repères au bas de la grille",
+                    checked = display.legend,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_LEGEND, on)
+                    display = Prefs.display(context)
+                }
+                SettingSwitch(
+                    title = "Activité et sommeil",
+                    subtitle = "Le nuage de points et la corrélation",
+                    checked = display.correlation,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_CORRELATION, on)
+                    display = Prefs.display(context)
+                }
+                SettingSwitch(
+                    title = "Commentaires",
+                    subtitle = "Les petites phrases grises qui expliquent les panneaux",
+                    checked = display.notes,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_NOTES, on)
+                    display = Prefs.display(context)
+                }
+            }
+        }
+
+        Panel {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Taille de la grille", color = Palette.text, fontWeight = FontWeight.SemiBold)
+                val sizeIndex = Prefs.CELL_SIZES.indexOf(display.cellSize).coerceAtLeast(0)
+                Stepper("Taille des cases", Prefs.CELL_LABELS[sizeIndex]) { step ->
+                    val next = (sizeIndex + step).coerceIn(0, Prefs.CELL_SIZES.lastIndex)
+                    Prefs.setCellSize(context, Prefs.CELL_SIZES[next])
+                    display = Prefs.display(context)
+                }
+                SettingSwitch(
+                    title = "Agrandir en paysage",
+                    subtitle = "Cases à la hauteur de l'écran quand le téléphone est à l'horizontale",
+                    checked = display.landscapeBig,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.LANDSCAPE_BIG, on)
+                    display = Prefs.display(context)
+                }
+                Text(
+                    "Quand les cases ne tiennent plus dans la largeur, la grille défile " +
+                        "latéralement ; la colonne des jours, elle, reste en place.",
+                    color = Palette.muted,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+
+        Panel {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Sauvegarde", color = Palette.text, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Un fichier JSON lisible tel quel : une ligne par jour, avec minutes de " +
+                        "sommeil, pas, cœur au repos et poids. L'app garde son propre historique, " +
+                        "que l'export emporte en entier et que l'import complète sans rien écraser.",
+                    color = Palette.muted,
+                    fontSize = 13.sp,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            backupStatus = null
+                            exportLauncher.launch("sommeil-${LocalDate.now()}.json")
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Exporter", color = Palette.text) }
+                    OutlinedButton(
+                        onClick = {
+                            backupStatus = null
+                            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Importer", color = Palette.text) }
+                }
+                backupStatus?.let { Text(it, color = Palette.levels[3], fontSize = 13.sp) }
+                TextButton(onClick = {
+                    if (confirmClear) {
+                        Archive.clear(context)
+                        confirmClear = false
+                        backupStatus = "Historique local effacé. Health Connect n'est pas touché."
+                    } else {
+                        confirmClear = true
+                    }
+                }) {
+                    Text(
+                        if (confirmClear) "Confirmer l'effacement" else "Effacer l'historique local",
+                        color = if (confirmClear) Palette.levels[0] else Palette.muted,
+                        fontSize = 13.sp,
+                    )
+                }
+            }
+        }
+
         Text(
-            "Les rappels sont calculés sur le téléphone, à partir des données déjà lues. " +
-                "Aucune donnée n'est envoyée nulle part.",
+            "Tout est calculé et gardé sur le téléphone. Rien ne part ailleurs, sauf le " +
+                "fichier que tu exportes toi-même.",
             color = Palette.muted.copy(alpha = 0.7f),
             fontSize = 11.sp,
         )

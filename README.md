@@ -22,6 +22,13 @@ Les données viennent de [Health Connect](https://health.google/health-connect-a
 - **Partage** : export de la grille de l'année en PNG, via le sélecteur de partage Android.
 - **Métriques masquables** : pas, cœur au repos et poids se retirent du menu principal depuis les
   réglages ; leurs autorisations ne sont alors plus réclamées. Le sommeil reste toujours affiché.
+- **Sauvegarde JSON** : export et import d'un fichier lisible tel quel, une ligne par jour
+  (voir [Format de sauvegarde](#format-de-sauvegarde)). L'app tient son propre historique, alimenté
+  par ce qu'elle lit dans Health Connect et par ce qui est importé ; il survit donc à un changement
+  de téléphone ou à la rétention de Health Connect.
+- **Affichage réglable** : statistiques, légende, panneau « activité et sommeil » et commentaires
+  s'activent séparément ; la taille des cases se choisit, et la grille peut remplir la hauteur
+  de l'écran quand le téléphone passe à l'horizontale (elle défile alors latéralement).
 - Mode démo si Health Connect n'est pas disponible.
 
 ## Échelles de couleurs
@@ -34,6 +41,27 @@ Les données viennent de [Health Connect](https://health.google/health-connect-a
 
 Le poids n'a pas de « bon » côté : il reçoit un dégradé bleu neutre, calé sur les quintiles
 de l'année affichée (du plus léger au plus lourd), avec les seuils réels en légende.
+
+## Format de sauvegarde
+
+```json
+{
+  "app": "sommeil",
+  "format": 1,
+  "exportedAt": "2026-09-18",
+  "days": [
+    { "date": "2026-01-01", "sleepMinutes": 431, "steps": 8123, "restingHeartRate": 56.2, "weightKg": 72.4 }
+  ]
+}
+```
+
+Chaque champ est facultatif : un fichier qui ne contient que `date` et `steps` s'importe très bien.
+Les minutes de sommeil sont celles de la nuit **qui se termine** ce jour-là, comme dans la grille.
+
+La lecture est volontairement tolérante, pour accepter ce que produisent d'autres applis :
+`days` peut aussi être un objet indexé par date, `sleepHours` remplace `sleepMinutes`, et les noms
+`heartRate`, `bpm`, `weight`, `step_count` sont reconnus. Un import complète l'historique existant
+sans l'écraser ; il n'écrit rien dans Health Connect.
 
 ## Compiler
 

@@ -1,0 +1,169 @@
+package com.paul.sleeptrack
+
+import android.content.Context
+import android.net.Uri
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.time.Duration
+import java.time.LocalDate
+
+/**
+ * Sauvegarde en JSON : un format lisible à l'œil nu, une ligne par jour, pensé pour être
+ * relu par une autre appli ou un tableur autant que par Sommeil.
+ *
+ * ```json
+ * { "app": "sommeil", "format": 1, "exportedAt": "2026-09-18",
+ *   "days": [ { "date": "2026-01-01", "sleepMinutes": 431, "steps": 8123,
+ *               "restingHeartRate": 56.2, "weightKg": 72.4 } ] }
+ * ```
+ *
+ * La lecture est volontairement tolérante : `days` peut aussi être un objet indexé par date,
+ * les heures de sommeil sont acceptées à la place des minutes, et les noms de champs les plus
+ * courants ailleurs (`heartRate`, `weight`, `step_count`…) sont reconnus.
+ */
+const val BACKUP_FORMAT = 1
+
+/**
+ * L'historique gardé par l'app : ce qu'elle a déjà lu dans Health Connect, plus ce qui a été
+ * importé. Health Connect oublie au-delà de sa propre rétention et ne suit pas d'un téléphone
+ * à l'autre ; ce fichier, lui, s'exporte. Il ne quitte le téléphone que si on l'exporte.
+ */
+object Archive {
+    private const val FILE = "archive.json"
+
+    private fun file(context: Context) = File(context.applicationContext.filesDir, FILE)
+
+    fun load(context: Context): HealthData = runCatching {
+        val f = file(context)
+        if (f.exists()) decodeBackup(JSONObject(f.readText())) else HealthData()
+    }.getOrDefault(HealthData())
+
+    fun save(context: Context, data: HealthData) {
+        runCatching { file(context).writeText(encodeBackup(data).toString()) }
+    }
+
+    /** Ajoute sans rien perdre ; en cas de doublon, la valeur entrante gagne. */
+    fun merge(context: Context, incoming: HealthData): HealthData {
+        if (incoming.isEmpty()) return load(context)
+        val merged = load(context) + incoming
+        save(context, merged)
+        return merged
+    }
+
+    fun clear(context: Context) {
+        runCatching { file(context).delete() }
+    }
+}
+
+/** Écrit la sauvegarde dans le fichier choisi par l'utilisateur. Renvoie le nombre de jours. */
+fun exportBackup(context: Context, uri: Uri, data: HealthData): Int {
+    val json = encodeBackup(data).toString(2)
+    context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+        out.write(json.toByteArray(Charsets.UTF_8))
+    } ?: error("fichier inaccessible en écriture")
+    return dayCount(data)
+}
+
+/** Relit un fichier de sauvegarde. Lève une exception si le JSON est illisible. */
+fun importBackup(context: Context, uri: Uri): HealthData {
+    val text = context.contentResolver.openInputStream(uri)
+        ?.use { it.readBytes().toString(Charsets.UTF_8) }
+        ?: error("fichier illisible")
+    return decodeBackup(JSONObject(text))
+}
+
+fun dayCount(data: HealthData): Int =
+    (data.nights.keys + data.steps.keys + data.heart.keys + data.weight.keys).size
+
+fun encodeBackup(data: HealthData): JSONObject {
+    val days = (data.nights.keys + data.steps.keys + data.heart.keys + data.weight.keys).sorted()
+    val array = JSONArray()
+    for (date in days) {
+        val day = JSONObject().put("date", date.toString())
+        data.nights[date]?.let { day.put("sleepMinutes", it.toMinutes()) }
+        data.steps[date]?.let { day.put("steps", it) }
+        data.heart[date]?.let { day.put("restingHeartRate", round1(it)) }
+        data.weight[date]?.let { day.put("weightKg", round1(it)) }
+        array.put(day)
+    }
+    val units = JSONObject()
+        .put("sleepMinutes", "minutes de sommeil dans la nuit qui se termine ce jour-là")
+        .put("steps", "pas du jour")
+        .put("restingHeartRate", "battements par minute au repos")
+        .put("weightKg", "kilogrammes")
+    return JSONObject()
+        .put("app", "sommeil")
+        .put("format", BACKUP_FORMAT)
+        .put("exportedAt", LocalDate.now().toString())
+        .put("units", units)
+        .put("days", array)
+}
+
+fun decodeBackup(root: JSONObject): HealthData {
+    val nights = mutableMapOf<LocalDate, Duration>()
+    val steps = mutableMapOf<LocalDate, Long>()
+    val heart = mutableMapOf<LocalDate, Double>()
+    val weight = mutableMapOf<LocalDate, Double>()
+
+    fun readDay(date: LocalDate, day: JSONObject) {
+        number(day, "sleepMinutes", "sleep_minutes", "minutesAsleep", "sleep")
+            ?.let { nights[date] = Duration.ofMinutes(it.toLong()) }
+        number(day, "sleepHours", "hoursAsleep")
+            ?.let { nights[date] = Duration.ofMinutes((it * 60).toLong()) }
+        number(day, "steps", "step_count", "stepCount")?.let { steps[date] = it.toLong() }
+        number(day, "restingHeartRate", "resting_heart_rate", "heartRate", "bpm")
+            ?.let { heart[date] = it }
+        number(day, "weightKg", "weight_kg", "weight")?.let { weight[date] = it }
+    }
+
+    when (val days = root.opt("days")) {
+        is JSONArray -> for (i in 0 until days.length()) {
+            val day = days.optJSONObject(i) ?: continue
+            val date = parseDate(day.optString("date").ifBlank { day.optString("day") }) ?: continue
+            readDay(date, day)
+        }
+        // Forme « indexée par date », plus compacte et courante dans d'autres exports.
+        is JSONObject -> days.keys().forEach { key ->
+            val date = parseDate(key) ?: return@forEach
+            days.optJSONObject(key)?.let { readDay(date, it) }
+        }
+    }
+
+    // Dernière tolérance : des séries à plat, une par métrique.
+    flatSeries(root, "sleepMinutes", "sleep")?.forEach { (d, v) -> nights[d] = Duration.ofMinutes(v.toLong()) }
+    flatSeries(root, "steps")?.forEach { (d, v) -> steps[d] = v.toLong() }
+    flatSeries(root, "restingHeartRate", "heart")?.forEach { (d, v) -> heart[d] = v }
+    flatSeries(root, "weightKg", "weight")?.forEach { (d, v) -> weight[d] = v }
+
+    return HealthData(nights, steps, heart, weight)
+}
+
+private fun flatSeries(root: JSONObject, vararg names: String): Map<LocalDate, Double>? {
+    val obj = names.firstNotNullOfOrNull { root.optJSONObject(it) } ?: return null
+    val out = mutableMapOf<LocalDate, Double>()
+    obj.keys().forEach { key ->
+        val date = parseDate(key) ?: return@forEach
+        val value = obj.optDouble(key, Double.NaN)
+        if (!value.isNaN()) out[date] = value
+    }
+    return out
+}
+
+private fun number(day: JSONObject, vararg names: String): Double? {
+    for (name in names) {
+        if (!day.has(name) || day.isNull(name)) continue
+        val value = day.optDouble(name, Double.NaN)
+        if (!value.isNaN()) return value
+    }
+    return null
+}
+
+// « 2026-01-01 » comme « 2026-01-01T23:12:00Z » : seule la date nous intéresse.
+private fun parseDate(raw: String?): LocalDate? {
+    val text = raw?.trim().orEmpty()
+    if (text.length < 10) return null
+    return runCatching { LocalDate.parse(text.take(10)) }.getOrNull()
+}
+
+private fun round1(value: Double): Double = Math.round(value * 10.0) / 10.0

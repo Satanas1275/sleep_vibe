@@ -22,6 +22,13 @@ data class HealthData(
 
     fun isEmpty(): Boolean = Metric.entries.all { series(it).isEmpty() }
 
+    fun filterYear(year: Int) = HealthData(
+        nights.filterKeys { it.year == year },
+        steps.filterKeys { it.year == year },
+        heart.filterKeys { it.year == year },
+        weight.filterKeys { it.year == year },
+    )
+
     operator fun plus(other: HealthData) = HealthData(
         nights + other.nights,
         steps + other.steps,

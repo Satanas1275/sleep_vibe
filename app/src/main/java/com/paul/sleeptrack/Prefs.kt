@@ -18,10 +18,20 @@ object Prefs {
     const val WIDGET_METRIC = "widget_metric"
     const val HIDDEN_METRICS = "hidden_metrics"
     const val LAST_METRIC = "last_metric"
+    const val SHOW_STATS = "show_stats"
+    const val SHOW_LEGEND = "show_legend"
+    const val SHOW_CORRELATION = "show_correlation"
+    const val SHOW_NOTES = "show_notes"
+    const val CELL_SIZE = "cell_size"
+    const val LANDSCAPE_BIG = "landscape_big"
 
     const val DEFAULT_EVENING_HOUR = 22
     const val DEFAULT_WEEKLY_HOUR = 19
     const val DEFAULT_GOAL_MINUTES = 420
+
+    /** Côté d'une case, en dp. 0 = la grille s'ajuste à la largeur de l'écran. */
+    val CELL_SIZES = listOf(0, 13, 18, 24)
+    val CELL_LABELS = listOf("Ajustée", "Moyenne", "Grande", "Très grande")
 
     fun of(context: Context): SharedPreferences =
         context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -32,6 +42,26 @@ object Prefs {
     fun weeklyHour(context: Context) = of(context).getInt(WEEKLY_HOUR, DEFAULT_WEEKLY_HOUR)
     fun goalMinutes(context: Context) = of(context).getInt(GOAL_MINUTES, DEFAULT_GOAL_MINUTES)
     fun goal(context: Context): Duration = Duration.ofMinutes(goalMinutes(context).toLong())
+
+    /** Ce que l'écran principal montre autour de la grille. */
+    fun display(context: Context): DisplayPrefs = of(context).let {
+        DisplayPrefs(
+            stats = it.getBoolean(SHOW_STATS, true),
+            legend = it.getBoolean(SHOW_LEGEND, true),
+            correlation = it.getBoolean(SHOW_CORRELATION, true),
+            notes = it.getBoolean(SHOW_NOTES, true),
+            cellSize = it.getInt(CELL_SIZE, 0),
+            landscapeBig = it.getBoolean(LANDSCAPE_BIG, true),
+        )
+    }
+
+    fun setFlag(context: Context, key: String, value: Boolean) {
+        of(context).edit().putBoolean(key, value).apply()
+    }
+
+    fun setCellSize(context: Context, dp: Int) {
+        of(context).edit().putInt(CELL_SIZE, dp).apply()
+    }
 
     /** Les métriques montrées dans l'app. Le sommeil ne se masque pas : c'est le sujet. */
     fun visibleMetrics(context: Context): List<Metric> {
@@ -73,6 +103,16 @@ object Prefs {
         return if (isVisible(context, stored)) stored else Metric.SLEEP
     }
 }
+
+/** Ce que l'écran principal affiche sous la grille, et la taille des cases. */
+data class DisplayPrefs(
+    val stats: Boolean = true,
+    val legend: Boolean = true,
+    val correlation: Boolean = true,
+    val notes: Boolean = true,
+    val cellSize: Int = 0,
+    val landscapeBig: Boolean = true,
+)
 
 /**
  * Dernières données lues, gardées pour que le widget et les rappels aient quelque chose
