@@ -15,8 +15,14 @@
         <package android:name="com.google.android.apps.healthdata" />
     </queries>
 
+    <!--
+      Pas de sauvegarde système : sans ça, Android recopierait l'historique de santé et les
+      préférences vers le Google Drive de l'utilisateur. L'app promet le contraire, et
+      l'export JSON est là pour déplacer les données quand c'est voulu.
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.SleepTrack">

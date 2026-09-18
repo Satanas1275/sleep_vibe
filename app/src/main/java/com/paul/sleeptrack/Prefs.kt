@@ -19,6 +19,8 @@ object Prefs {
     const val HIDDEN_METRICS = "hidden_metrics"
     const val LAST_METRIC = "last_metric"
     const val SHOW_STATS = "show_stats"
+    const val SHOW_STREAKS = "show_streaks"
+    const val SHOW_WEEK = "show_week"
     const val SHOW_LEGEND = "show_legend"
     const val SHOW_CORRELATION = "show_correlation"
     const val SHOW_NOTES = "show_notes"
@@ -47,11 +49,14 @@ object Prefs {
     fun display(context: Context): DisplayPrefs = of(context).let {
         DisplayPrefs(
             stats = it.getBoolean(SHOW_STATS, true),
+            streaks = it.getBoolean(SHOW_STREAKS, true),
+            week = it.getBoolean(SHOW_WEEK, true),
             legend = it.getBoolean(SHOW_LEGEND, true),
             correlation = it.getBoolean(SHOW_CORRELATION, true),
             notes = it.getBoolean(SHOW_NOTES, true),
             cellSize = it.getInt(CELL_SIZE, 0),
             landscapeBig = it.getBoolean(LANDSCAPE_BIG, true),
+            goalMinutes = it.getInt(GOAL_MINUTES, DEFAULT_GOAL_MINUTES),
         )
     }
 
@@ -107,11 +112,15 @@ object Prefs {
 /** Ce que l'écran principal affiche sous la grille, et la taille des cases. */
 data class DisplayPrefs(
     val stats: Boolean = true,
+    val streaks: Boolean = true,
+    val week: Boolean = true,
     val legend: Boolean = true,
     val correlation: Boolean = true,
     val notes: Boolean = true,
     val cellSize: Int = 0,
     val landscapeBig: Boolean = true,
+    /** Repris ici parce que les séries s'en servent comme seuil. */
+    val goalMinutes: Int = Prefs.DEFAULT_GOAL_MINUTES,
 )
 
 /**

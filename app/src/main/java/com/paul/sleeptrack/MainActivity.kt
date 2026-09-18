@@ -269,10 +269,25 @@ private fun MainScreen(
 
         if (series.isEmpty()) {
             if (display.notes) EmptyNote("Aucune donnée « ${metric.label.lowercase()} » pour cette année.")
-        } else if (display.stats) {
-            val tiles = statTiles(metric, data, scale)
-            StatRow(tiles[0], tiles[1])
-            StatRow(tiles[2], tiles[3])
+        } else {
+            if (display.stats) {
+                val tiles = statTiles(metric, data, scale)
+                StatRow(tiles[0], tiles[1])
+                StatRow(tiles[2], tiles[3])
+            }
+            if (display.streaks) {
+                streakTiles(metric, data, display.goalMinutes, year)?.let { (current, best) ->
+                    StatRow(current, best)
+                    if (display.notes) {
+                        targetFor(metric, display.goalMinutes)?.let { target ->
+                            EmptyNote("Séries de ${target.label} ; un jour sans donnée la coupe.")
+                        }
+                    }
+                }
+            }
+            if (display.week) {
+                Panel { WeekProfile(metric, data, scale, showNote = display.notes) }
+            }
         }
 
         if (display.correlation && Metric.STEPS in visibleMetrics &&
@@ -480,6 +495,22 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
         }
     }
 
+    val csvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            backupStatus = runCatching {
+                withContext(Dispatchers.IO) {
+                    exportCsv(context, uri, Archive.merge(context, data))
+                }
+            }.fold(
+                { "Exporté : $it jours en CSV." },
+                { "Export impossible (${it.message ?: "erreur inconnue"})." },
+            )
+        }
+    }
+
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -669,6 +700,22 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
                     display = Prefs.display(context)
                 }
                 SettingSwitch(
+                    title = "Séries",
+                    subtitle = "Jours consécutifs au-dessus de l'objectif, et record de l'année",
+                    checked = display.streaks,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_STREAKS, on)
+                    display = Prefs.display(context)
+                }
+                SettingSwitch(
+                    title = "Semaine type",
+                    subtitle = "La moyenne de chaque jour de la semaine",
+                    checked = display.week,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_WEEK, on)
+                    display = Prefs.display(context)
+                }
+                SettingSwitch(
                     title = "Légende des couleurs",
                     subtitle = "La bande de repères au bas de la grille",
                     checked = display.legend,
@@ -746,6 +793,12 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
                         },
                         modifier = Modifier.weight(1f),
                     ) { Text("Importer", color = Palette.text) }
+                }
+                TextButton(onClick = {
+                    backupStatus = null
+                    csvLauncher.launch("sommeil-${LocalDate.now()}.csv")
+                }) {
+                    Text("Exporter en CSV (pour un tableur)", color = Palette.muted, fontSize = 13.sp)
                 }
                 backupStatus?.let { Text(it, color = Palette.levels[3], fontSize = 13.sp) }
                 TextButton(onClick = {
