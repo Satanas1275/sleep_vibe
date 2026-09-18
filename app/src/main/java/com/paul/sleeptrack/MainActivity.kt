@@ -29,7 +29,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.HealthConnectException
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -119,12 +118,11 @@ private fun SleepApp() {
             // on ne doit surtout pas continuer à écrire dans `state` après coup, sous
             // peine de "The coroutine scope left the composition".
             throw e
-        } catch (e: HealthConnectException) {
-            if (e.errorCode == HealthConnectException.ERROR_RATE_LIMIT_EXCEEDED) {
-                UiState.Error("Trop de lectures d'un coup : Health Connect a limité les requêtes. Réessaie dans quelques secondes.")
-            } else {
-                UiState.Error(e.message ?: e.javaClass.simpleName)
-            }
+        } catch (e: IllegalStateException) {
+            // D'après la doc Health Connect, IllegalStateException couvre à la fois le
+            // rate limit et un service Health Connect indisponible ; pas moyen de les
+            // distinguer proprement, donc un message qui couvre les deux cas.
+            UiState.Error("Health Connect n'a pas pu répondre (trop de requêtes ou service indisponible). Réessaie dans quelques secondes.")
         } catch (e: Exception) {
             UiState.Error(e.message ?: e.javaClass.simpleName)
         }
