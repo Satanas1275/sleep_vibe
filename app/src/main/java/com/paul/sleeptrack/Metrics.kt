@@ -51,8 +51,11 @@ fun Metric.format(value: Double): String = when (this) {
     Metric.WEIGHT -> "%.1f kg".format(Locale.FRENCH, value)
 }
 
-/** Unité employée par une somme de valeurs ; « 312 nuits », « 312 jours ». */
-fun Metric.countLabel(n: Int): String = if (this == Metric.SLEEP) "$n nuits" else "$n jours"
+/** Unité employée par une somme de valeurs ; « 312 nuits », « 1 jour ». */
+fun Metric.countLabel(n: Int): String {
+    val unit = if (this == Metric.SLEEP) "nuit" else "jour"
+    return "$n $unit" + if (n > 1) "s" else ""
+}
 
 /**
  * Cinq niveaux de couleur. Pour le sommeil et les pas, plus c'est haut mieux c'est ;

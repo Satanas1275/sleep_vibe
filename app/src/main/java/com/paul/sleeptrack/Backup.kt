@@ -65,6 +65,28 @@ fun exportBackup(context: Context, uri: Uri, data: HealthData): Int {
     return dayCount(data)
 }
 
+/**
+ * Même contenu en CSV, pour les tableurs. Séparateur virgule et point décimal : la convention
+ * qu'attendent les tableurs à l'import, quelle que soit la langue de l'interface.
+ */
+fun exportCsv(context: Context, uri: Uri, data: HealthData): Int {
+    val days = (data.nights.keys + data.steps.keys + data.heart.keys + data.weight.keys).sorted()
+    val text = buildString {
+        append("date,sleep_minutes,steps,resting_heart_rate,weight_kg\n")
+        for (date in days) {
+            append(date).append(',')
+            append(data.nights[date]?.toMinutes() ?: "").append(',')
+            append(data.steps[date] ?: "").append(',')
+            append(data.heart[date]?.let { round1(it) } ?: "").append(',')
+            append(data.weight[date]?.let { round1(it) } ?: "").append('\n')
+        }
+    }
+    context.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+        out.write(text.toByteArray(Charsets.UTF_8))
+    } ?: error("fichier inaccessible en écriture")
+    return days.size
+}
+
 /** Relit un fichier de sauvegarde. Lève une exception si le JSON est illisible. */
 fun importBackup(context: Context, uri: Uri): HealthData {
     val text = context.contentResolver.openInputStream(uri)

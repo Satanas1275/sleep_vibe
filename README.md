@@ -7,12 +7,20 @@ plus la nuit est longue (ou la journée active), plus la case est verte ; plus e
 
 Les données viennent de [Health Connect](https://health.google/health-connect-android/) et restent sur le téléphone : aucune connexion réseau, aucun stockage externe.
 
+L'app refuse aussi la sauvegarde automatique d'Android (`allowBackup="false"` et
+`data_extraction_rules.xml`), qui recopierait sinon l'historique de santé vers le Google Drive du
+téléphone. Les données ne sortent que par l'export, quand on le demande.
+
 ## Fonctionnalités
 
 - Grille annuelle pour quatre métriques — sommeil, pas, cœur au repos, poids — navigation par année, détail d'une journée au toucher.
 - Sommeil : sessions Health Connect, stades « éveillé » déduits, chevauchements entre montre et téléphone fusionnés, nuit rattachée à la date du réveil.
 - Pas : agrégation quotidienne Health Connect. Cœur au repos et poids : moyenne des relevés du jour.
 - Statistiques par métrique : moyenne, 7 derniers jours, record, tendance sur 30 jours.
+- **Séries** : jours consécutifs au-dessus de l'objectif (celui des réglages pour le sommeil,
+  10 000 pas, 58 bpm), série en cours et record de l'année. Un jour sans donnée coupe la série.
+- **Semaine type** : moyenne de chaque jour de la semaine, avec le jour le plus haut et le plus bas.
+  Les barres se comparent entre elles et non à zéro, sans quoi l'écart réel serait invisible.
 - **Activité et sommeil** : nuage de points et coefficient de corrélation entre les pas d'une journée
   et la nuit qui la suit, avec la comparaison « après 8 000 pas ou plus » contre « après une journée calme ».
 - **Rappels** (optionnels) : rappel du soir quand la moyenne des 7 derniers jours passe sous l'objectif,
@@ -23,12 +31,13 @@ Les données viennent de [Health Connect](https://health.google/health-connect-a
 - **Métriques masquables** : pas, cœur au repos et poids se retirent du menu principal depuis les
   réglages ; leurs autorisations ne sont alors plus réclamées. Le sommeil reste toujours affiché.
 - **Sauvegarde JSON** : export et import d'un fichier lisible tel quel, une ligne par jour
-  (voir [Format de sauvegarde](#format-de-sauvegarde)). L'app tient son propre historique, alimenté
-  par ce qu'elle lit dans Health Connect et par ce qui est importé ; il survit donc à un changement
-  de téléphone ou à la rétention de Health Connect.
-- **Affichage réglable** : statistiques, légende, panneau « activité et sommeil » et commentaires
-  s'activent séparément ; la taille des cases se choisit, et la grille peut remplir la hauteur
-  de l'écran quand le téléphone passe à l'horizontale (elle défile alors latéralement).
+  (voir [Format de sauvegarde](#format-de-sauvegarde)), plus un export CSV pour les tableurs.
+  L'app tient son propre historique, alimenté par ce qu'elle lit dans Health Connect et par ce qui
+  est importé ; il survit donc à un changement de téléphone ou à la rétention de Health Connect.
+- **Affichage réglable** : statistiques, séries, semaine type, légende, panneau « activité et
+  sommeil » et commentaires s'activent séparément ; la taille des cases se choisit, et la grille
+  peut remplir la hauteur de l'écran quand le téléphone passe à l'horizontale (elle défile alors
+  latéralement).
 - Mode démo si Health Connect n'est pas disponible.
 
 ## Échelles de couleurs

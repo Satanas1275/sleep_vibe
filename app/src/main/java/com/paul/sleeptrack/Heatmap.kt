@@ -79,6 +79,7 @@ fun YearHeatmap(
     val currentOnSelect = rememberUpdatedState(onSelect)
     val currentColorAt = rememberUpdatedState(colorAt)
     val scrollState = rememberScrollState()
+    val today = LocalDate.now()
 
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val fitPitch = (maxWidth - labelWidth) / weeks
@@ -142,6 +143,13 @@ fun YearHeatmap(
                             if (day.year != year) continue
                             val topLeft = Offset(col * p + inset, row * p + inset)
                             drawRoundRect(currentColorAt.value(day) ?: Palette.empty, topLeft, Size(s, s), radius)
+                            // Repère discret sur aujourd'hui, pour savoir où on en est dans l'année.
+                            if (day == today && day != selected) {
+                                drawRoundRect(
+                                    Palette.muted, topLeft, Size(s, s), radius,
+                                    style = Stroke(1.5.dp.toPx()),
+                                )
+                            }
                             if (day == selected) {
                                 drawRoundRect(Color.White, topLeft, Size(s, s), radius, style = Stroke(1.5.dp.toPx()))
                             }
