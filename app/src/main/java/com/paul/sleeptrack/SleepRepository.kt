@@ -10,6 +10,8 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.Instant
@@ -47,26 +49,55 @@ private val NOT_ASLEEP = setOf(
     SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
 )
 
+/** Réessaie un appel Health Connect qui se fait jeter par le rate limiter
+ *  (IllegalStateException — voir la doc officielle Health Connect, c'est ce
+ *  qu'elle catch dans son propre exemple de backoff) au lieu de remonter
+ *  l'erreur direct à l'écran. Backoff exponentiel court : 3 essais max. */
+private suspend fun <T> retryOnRateLimit(maxAttempts: Int = 3, block: suspend () -> T): T {
+    var attempt = 0
+    var backoff = 400L
+    while (true) {
+        try {
+            return block()
+        } catch (e: IllegalStateException) {
+            attempt++
+            if (attempt >= maxAttempts) throw e
+            delay(backoff)
+            backoff *= 3
+        }
+    }
+}
+
 /** Lit toutes les métriques autorisées entre deux dates incluses. Les quatre lectures
- *  sont indépendantes mais on les fait volontairement en séquentiel, espacées d'une
- *  petite pause : Health Connect limite un nombre d'appels par fenêtre de temps, donc
- *  paralléliser ne change rien au nombre total d'appels mais les compresse dans une
- *  fenêtre plus courte, ce qui rend le rate limit *plus* probable, pas moins. */
+ *  sont indépendantes et lancées en parallèle pour finir plus vite. Chacune est
+ *  protégée par retryOnRateLimit : si le rate limiter de Health Connect en jette une,
+ *  on réessaie avec un backoff au lieu de planter — plus robuste que d'espacer les
+ *  appels à l'aveugle, et ça marche aussi bien en séquentiel qu'en parallèle. */
 suspend fun loadHealthData(
     client: HealthConnectClient,
     granted: Set<String>,
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): HealthData {
-    val nights = if (PERMISSION_READ_SLEEP in granted) readSleepByNight(client, from, to, zone) else emptyMap()
-    delay(150)
-    val steps = if (PERMISSION_READ_STEPS in granted) readStepsByDay(client, from, to, zone) else emptyMap()
-    delay(150)
-    val heart = if (PERMISSION_READ_HEART in granted) readRestingHeartRate(client, from, to, zone) else emptyMap()
-    delay(150)
-    val weight = if (PERMISSION_READ_WEIGHT in granted) readWeight(client, from, to, zone) else emptyMap()
-    return HealthData(nights = nights, steps = steps, heart = heart, weight = weight)
+): HealthData = coroutineScope {
+    val nights = async {
+        if (PERMISSION_READ_SLEEP in granted) retryOnRateLimit { readSleepByNight(client, from, to, zone) } else emptyMap()
+    }
+    val steps = async {
+        if (PERMISSION_READ_STEPS in granted) retryOnRateLimit { readStepsByDay(client, from, to, zone) } else emptyMap()
+    }
+    val heart = async {
+        if (PERMISSION_READ_HEART in granted) retryOnRateLimit { readRestingHeartRate(client, from, to, zone) } else emptyMap()
+    }
+    val weight = async {
+        if (PERMISSION_READ_WEIGHT in granted) retryOnRateLimit { readWeight(client, from, to, zone) } else emptyMap()
+    }
+    HealthData(
+        nights = nights.await(),
+        steps = steps.await(),
+        heart = heart.await(),
+        weight = weight.await(),
+    )
 }
 
 suspend fun loadYear(
