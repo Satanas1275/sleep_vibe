@@ -10,6 +10,8 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.Instant
@@ -47,19 +49,37 @@ private val NOT_ASLEEP = setOf(
     SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
 )
 
-/** Lit toutes les métriques autorisées entre deux dates incluses. */
+/** Lit toutes les métriques autorisées entre deux dates incluses. Les quatre
+ *  lectures sont indépendantes : on les lance toutes en même temps pour finir
+ *  plus vite et exposer le moins longtemps possible le rate limiter de Health
+ *  Connect (le nombre total de requêtes ne change pas, mais l'ensemble se
+ *  termine bien plus tôt). */
 suspend fun loadHealthData(
     client: HealthConnectClient,
     granted: Set<String>,
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): HealthData = HealthData(
-    nights = if (PERMISSION_READ_SLEEP in granted) readSleepByNight(client, from, to, zone) else emptyMap(),
-    steps = if (PERMISSION_READ_STEPS in granted) readStepsByDay(client, from, to, zone) else emptyMap(),
-    heart = if (PERMISSION_READ_HEART in granted) readRestingHeartRate(client, from, to, zone) else emptyMap(),
-    weight = if (PERMISSION_READ_WEIGHT in granted) readWeight(client, from, to, zone) else emptyMap(),
-)
+): HealthData = coroutineScope {
+    val nights = async {
+        if (PERMISSION_READ_SLEEP in granted) readSleepByNight(client, from, to, zone) else emptyMap()
+    }
+    val steps = async {
+        if (PERMISSION_READ_STEPS in granted) readStepsByDay(client, from, to, zone) else emptyMap()
+    }
+    val heart = async {
+        if (PERMISSION_READ_HEART in granted) readRestingHeartRate(client, from, to, zone) else emptyMap()
+    }
+    val weight = async {
+        if (PERMISSION_READ_WEIGHT in granted) readWeight(client, from, to, zone) else emptyMap()
+    }
+    HealthData(
+        nights = nights.await(),
+        steps = steps.await(),
+        heart = heart.await(),
+        weight = weight.await(),
+    )
+}
 
 suspend fun loadYear(
     client: HealthConnectClient,
