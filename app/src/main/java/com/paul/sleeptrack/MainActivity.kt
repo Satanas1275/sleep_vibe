@@ -72,6 +72,9 @@ private fun SleepApp() {
     var refreshKey by remember { mutableIntStateOf(0) }
     var display by remember { mutableStateOf(Prefs.display(context)) }
     var state by remember { mutableStateOf<UiState>(UiState.Loading) }
+    // Années déjà lues en direct dans Health Connect depuis le lancement de l'app :
+    // sert à éviter de retaper toute une année à chaque retour au premier plan.
+    val fetchedYears = remember { mutableStateOf(setOf<Int>()) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
@@ -101,13 +104,27 @@ private fun SleepApp() {
                     UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
                 }
             } else {
-                // Health Connect a le dernier mot sur les jours qu'il connaît ; l'archive
-                // comble le reste.
-                val data = archived + loadYear(client, granted, year)
+                val today = LocalDate.now()
+                val alreadyFetched = year in fetchedYears.value
+                val fresh = when {
+                    // Année passée déjà lue une fois cette session : ses données ne
+                    // bougent plus, inutile de retaper Health Connect à chaque retour
+                    // au premier plan — c'est ça qui faisait taper le rate limit en
+                    // boucle. On se contente de l'archive.
+                    alreadyFetched && year != today.year -> HealthData()
+                    // Année en cours déjà lue une fois : on ne relit que les derniers
+                    // jours (seuls susceptibles d'avoir changé), pas toute l'année.
+                    alreadyFetched -> loadHealthData(client, granted, today.minusDays(3), today)
+                    // Premier passage sur cette année cette session : lecture complète,
+                    // obligatoire au moins une fois.
+                    else -> loadYear(client, granted, year)
+                }
+                if (!alreadyFetched) fetchedYears.value = fetchedYears.value + year
+                val data = archived + fresh
                 withContext(Dispatchers.IO) { Archive.merge(context, data) }
                 // Le widget et les rappels lisent ce cache : on le rafraîchit à chaque
                 // passage sur l'année en cours.
-                if (year == LocalDate.now().year) {
+                if (year == today.year) {
                     DataCache.save(context, data)
                     updateAllWidgets(context)
                 }
