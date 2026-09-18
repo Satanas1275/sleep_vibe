@@ -3,7 +3,9 @@ package com.paul.sleeptrack
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -16,6 +18,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.time.DayOfWeek
@@ -56,49 +59,63 @@ object Palette {
 
 private val DAY_LABELS = listOf("Lun", "", "Mer", "", "Ven", "", "Dim")
 
+/**
+ * La grille de l'année. Par défaut elle tient dans la largeur ; si [minPitch] demande des
+ * cases plus grandes que cet ajustement, la grille déborde et défile horizontalement, la
+ * colonne des jours restant en place.
+ */
 @Composable
 fun YearHeatmap(
     year: Int,
     selected: LocalDate?,
     onSelect: (LocalDate?) -> Unit,
     colorAt: (LocalDate) -> Color?,
+    minPitch: Dp = 0.dp,
 ) {
     val gridStart = LocalDate.of(year, 1, 1).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
     val weeks = (ChronoUnit.DAYS.between(gridStart, LocalDate.of(year, 12, 31)) / 7 + 1).toInt()
     val labelWidth = 28.dp
+    val monthsHeight = 16.dp
     val currentOnSelect = rememberUpdatedState(onSelect)
     val currentColorAt = rememberUpdatedState(colorAt)
+    val scrollState = rememberScrollState()
 
     BoxWithConstraints(Modifier.fillMaxWidth()) {
-        val gridWidth = maxWidth - labelWidth
-        val pitch = gridWidth / weeks
+        val fitPitch = (maxWidth - labelWidth) / weeks
+        val pitch = maxOf(fitPitch, minPitch)
+        val gridWidth = pitch * weeks
         val cell = pitch * 0.8f
+        val scrolls = pitch > fitPitch
+        val labelSize = if (pitch >= 16.dp) 11.sp else 9.sp
 
-        Column {
-            Box(Modifier.padding(start = labelWidth).fillMaxWidth().height(16.dp)) {
-                for (month in 1..12) {
-                    val first = LocalDate.of(year, month, 1)
-                    val col = (ChronoUnit.DAYS.between(gridStart, first) / 7).toInt()
-                    Text(
-                        first.month.getDisplayName(TextStyle.SHORT, Locale.FRENCH)
-                            .take(3)
-                            .replaceFirstChar { it.uppercase() },
-                        color = Palette.muted,
-                        fontSize = 9.sp,
-                        maxLines = 1,
-                        softWrap = false,
-                        modifier = Modifier.offset(x = pitch * col),
-                    )
+        Row {
+            Column(Modifier.width(labelWidth)) {
+                Spacer(Modifier.height(monthsHeight))
+                DAY_LABELS.forEach { label ->
+                    Box(Modifier.height(pitch), contentAlignment = Alignment.CenterStart) {
+                        if (label.isNotEmpty()) {
+                            Text(label, color = Palette.muted, fontSize = labelSize, maxLines = 1, softWrap = false)
+                        }
+                    }
                 }
             }
-            Row {
-                Column(Modifier.width(labelWidth)) {
-                    DAY_LABELS.forEach { label ->
-                        Box(Modifier.height(pitch), contentAlignment = Alignment.CenterStart) {
-                            if (label.isNotEmpty()) {
-                                Text(label, color = Palette.muted, fontSize = 9.sp, maxLines = 1, softWrap = false)
-                            }
-                        }
+            Column(
+                if (scrolls) Modifier.horizontalScroll(scrollState) else Modifier
+            ) {
+                Box(Modifier.width(gridWidth).height(monthsHeight)) {
+                    for (month in 1..12) {
+                        val first = LocalDate.of(year, month, 1)
+                        val col = (ChronoUnit.DAYS.between(gridStart, first) / 7).toInt()
+                        Text(
+                            first.month.getDisplayName(TextStyle.SHORT, Locale.FRENCH)
+                                .take(3)
+                                .replaceFirstChar { it.uppercase() },
+                            color = Palette.muted,
+                            fontSize = labelSize,
+                            maxLines = 1,
+                            softWrap = false,
+                            modifier = Modifier.offset(x = pitch * col),
+                        )
                     }
                 }
                 Canvas(

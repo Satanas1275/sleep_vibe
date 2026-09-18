@@ -93,7 +93,7 @@ private fun meanSleep(pairs: List<DayNight>): Duration =
     Duration.ofMinutes((pairs.sumOf { it.sleepHours } / pairs.size * 60).toLong())
 
 @Composable
-fun CorrelationPanel(data: HealthData) {
+fun CorrelationPanel(data: HealthData, showNotes: Boolean = true) {
     val pairs = pairDaysWithNights(data)
     val insight = correlationInsight(data)
 
@@ -145,12 +145,14 @@ fun CorrelationPanel(data: HealthData) {
             )
         }
 
-        Text(
-            "Un lien n'est pas une cause : une journée active et une bonne nuit peuvent " +
-                "simplement suivre la même semaine tranquille.",
-            color = Palette.muted.copy(alpha = 0.7f),
-            fontSize = 11.sp,
-        )
+        if (showNotes) {
+            Text(
+                "Un lien n'est pas une cause : une journée active et une bonne nuit peuvent " +
+                    "simplement suivre la même semaine tranquille.",
+                color = Palette.muted.copy(alpha = 0.7f),
+                fontSize = 11.sp,
+            )
+        }
     }
 }
 
