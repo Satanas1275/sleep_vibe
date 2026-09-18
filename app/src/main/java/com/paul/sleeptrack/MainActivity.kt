@@ -29,9 +29,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectException
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -111,6 +113,17 @@ private fun SleepApp() {
                     updateAllWidgets(context)
                 }
                 UiState.Ready(data, REQUESTED_PERMISSIONS - granted)
+            }
+        } catch (e: CancellationException) {
+            // L'effet a été annulé (changement d'année/écran pendant le chargement) :
+            // on ne doit surtout pas continuer à écrire dans `state` après coup, sous
+            // peine de "The coroutine scope left the composition".
+            throw e
+        } catch (e: HealthConnectException) {
+            if (e.errorCode == HealthConnectException.ERROR_RATE_LIMIT_EXCEEDED) {
+                UiState.Error("Trop de lectures d'un coup : Health Connect a limité les requêtes. Réessaie dans quelques secondes.")
+            } else {
+                UiState.Error(e.message ?: e.javaClass.simpleName)
             }
         } catch (e: Exception) {
             UiState.Error(e.message ?: e.javaClass.simpleName)
@@ -461,6 +474,19 @@ private fun Message(title: String, body: String, action: String, onAction: () ->
 /** Marqueur : la demande d'autorisation en cours vient du bouton d'exemple. */
 private const val SAMPLE = "sample"
 
+// `runCatching` attrape aussi CancellationException, ce qui casse l'annulation structurée :
+// si l'écran est quitté pendant un export/import, la coroutine annulée continuerait alors à
+// écrire dans un état Compose déjà sorti de la composition ("The coroutine scope left the
+// composition"). Ce remplacement relance l'annulation au lieu de l'avaler.
+private inline fun <T> catchingExceptCancellation(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
+
 @Composable
 private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -482,7 +508,7 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            backupStatus = runCatching {
+            backupStatus = catchingExceptCancellation {
                 withContext(Dispatchers.IO) {
                     // On verse d'abord l'année affichée dans l'archive : l'export porte
                     // alors tout ce que l'app connaît, pas seulement l'écran ouvert.
@@ -500,7 +526,7 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            backupStatus = runCatching {
+            backupStatus = catchingExceptCancellation {
                 withContext(Dispatchers.IO) {
                     exportCsv(context, uri, Archive.merge(context, data))
                 }
@@ -516,7 +542,7 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            backupStatus = runCatching {
+            backupStatus = catchingExceptCancellation {
                 withContext(Dispatchers.IO) {
                     val imported = importBackup(context, uri)
                     Archive.merge(context, imported)
