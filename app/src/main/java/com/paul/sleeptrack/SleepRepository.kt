@@ -75,36 +75,46 @@ private suspend fun <T> retryOnRateLimit(maxAttempts: Int = 4, block: suspend ()
     }
 }
 
-/** Lit toutes les métriques autorisées entre deux dates incluses. Les quatre lectures
- *  sont indépendantes et lancées en parallèle pour finir plus vite. Chacune est
- *  protégée par retryOnRateLimit : si le rate limiter de Health Connect en jette une,
- *  on réessaie avec un backoff au lieu de planter — plus robuste que d'espacer les
- *  appels à l'aveugle, et ça marche aussi bien en séquentiel qu'en parallèle. */
+/** Lit toutes les métriques autorisées entre deux dates incluses. `concurrent` contrôle
+ *  la stratégie : en parallèle (rapide) pour les petites lectures fréquentes comme le
+ *  rattrapage des derniers jours au resume, ou séquentiel + espacé (plus lent mais
+ *  bien plus sûr) pour la grosse lecture initiale d'une année complète, où le volume
+ *  de données rend un rate limit beaucoup plus probable. */
 suspend fun loadHealthData(
     client: HealthConnectClient,
     granted: Set<String>,
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): HealthData = coroutineScope {
-    val nights = async {
+    concurrent: Boolean = true,
+): HealthData {
+    suspend fun sleep() =
         if (PERMISSION_READ_SLEEP in granted) retryOnRateLimit { readSleepByNight(client, from, to, zone) } else emptyMap()
-    }
-    val steps = async {
+    suspend fun steps() =
         if (PERMISSION_READ_STEPS in granted) retryOnRateLimit { readStepsByDay(client, from, to, zone) } else emptyMap()
-    }
-    val heart = async {
+    suspend fun heart() =
         if (PERMISSION_READ_HEART in granted) retryOnRateLimit { readRestingHeartRate(client, from, to, zone) } else emptyMap()
-    }
-    val weight = async {
+    suspend fun weight() =
         if (PERMISSION_READ_WEIGHT in granted) retryOnRateLimit { readWeight(client, from, to, zone) } else emptyMap()
+
+    return if (concurrent) {
+        coroutineScope {
+            val nights = async { sleep() }
+            val steps = async { steps() }
+            val heart = async { heart() }
+            val weight = async { weight() }
+            HealthData(nights.await(), steps.await(), heart.await(), weight.await())
+        }
+    } else {
+        val nights = sleep()
+        delay(200)
+        val steps = steps()
+        delay(200)
+        val heart = heart()
+        delay(200)
+        val weight = weight()
+        HealthData(nights, steps, heart, weight)
     }
-    HealthData(
-        nights = nights.await(),
-        steps = steps.await(),
-        heart = heart.await(),
-        weight = weight.await(),
-    )
 }
 
 suspend fun loadYear(
@@ -112,7 +122,9 @@ suspend fun loadYear(
     granted: Set<String>,
     year: Int,
     zone: ZoneId = ZoneId.systemDefault(),
-): HealthData = loadHealthData(client, granted, LocalDate.of(year, 1, 1), LocalDate.of(year, 12, 31), zone)
+): HealthData = loadHealthData(
+    client, granted, LocalDate.of(year, 1, 1), LocalDate.of(year, 12, 31), zone, concurrent = false,
+)
 
 /** Durée de sommeil par nuit, la nuit étant rattachée à la date du réveil. */
 suspend fun readSleepByNight(
@@ -126,7 +138,10 @@ suspend fun readSleepByNight(
     val intervalsByDate = mutableMapOf<LocalDate, MutableList<Pair<Instant, Instant>>>()
 
     var pageToken: String? = null
+    var firstPage = true
     do {
+        if (!firstPage) delay(150)
+        firstPage = false
         val response = client.readRecords(
             ReadRecordsRequest(
                 recordType = SleepSessionRecord::class,
@@ -242,7 +257,10 @@ private suspend fun <T : Record> readDailyMean(
     val sums = mutableMapOf<LocalDate, Pair<Double, Int>>()
 
     var pageToken: String? = null
+    var firstPage = true
     do {
+        if (!firstPage) delay(150)
+        firstPage = false
         val response = client.readRecords(
             ReadRecordsRequest(
                 recordType = type,
