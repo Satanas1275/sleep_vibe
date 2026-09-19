@@ -141,15 +141,16 @@ private fun SleepApp() {
                     }
                     state = UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
                 }
-                // Premier passage sur cette année cette session : on lit le mois le
-                // plus récent en premier (affichage rapide), puis on comble le reste
-                // de l'année mois par mois en tâche de fond, chaque mois lu venant
-                // enrichir l'écran et l'archive au fur et à mesure — plutôt que de
-                // faire attendre l'écran sur l'année entière d'un coup.
+                // Premier passage sur cette année cette session : on lit la semaine la
+                // plus récente en premier (affichage rapide), puis on comble le reste
+                // de l'année semaine par semaine en tâche de fond, chaque semaine lue
+                // venant enrichir l'écran et l'archive au fur et à mesure — plutôt que
+                // de faire attendre l'écran sur l'année entière (ou même un mois) d'un
+                // coup.
                 else -> {
                     var accumulated = archived
                     var anyIssue = false
-                    for ((from, to) in monthChunks(year)) {
+                    for ((from, to) in weekChunks(year)) {
                         val result = try {
                             withTimeout(25_000) { loadHealthData(client, granted, from, to, concurrent = false) }
                         } catch (e: TimeoutCancellationException) {
@@ -163,7 +164,7 @@ private fun SleepApp() {
                             updateAllWidgets(context)
                         }
                         val warning = if (anyIssue) {
-                            "Health Connect a limité ou ralenti certaines requêtes : des mois plus anciens n'ont peut-être pas encore été chargés. Réessaie plus tard pour compléter."
+                            "Health Connect a limité ou ralenti certaines requêtes : des périodes plus anciennes n'ont peut-être pas encore été chargées. Réessaie plus tard pour compléter."
                         } else {
                             null
                         }

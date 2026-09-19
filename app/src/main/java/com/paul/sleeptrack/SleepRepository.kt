@@ -146,18 +146,21 @@ suspend fun loadHealthData(
     )
 }
 
-/** Découpe une année en tranches d'un mois, la plus récente en premier : on veut
- *  afficher le mois courant tout de suite et combler le reste de l'année en tâche de
- *  fond, plutôt que de faire attendre l'écran sur toute l'année d'un coup. Bornée à
- *  aujourd'hui pour l'année en cours. */
-fun monthChunks(year: Int, zone: ZoneId = ZoneId.systemDefault()): List<Pair<LocalDate, LocalDate>> {
+/** Découpe une année en tranches d'une semaine, la plus récente en premier : on veut
+ *  afficher les derniers jours tout de suite et combler le reste de l'année en tâche
+ *  de fond, plutôt que de faire attendre l'écran sur toute l'année (ou même tout un
+ *  mois) d'un coup. Des tranches plus petites qu'un mois, parce qu'une source comme
+ *  Health Sync peut écrire beaucoup d'entrées (resynchronisations, doublons) qui
+ *  rendent même une fenêtre d'un mois lourde à parcourir. Bornée à aujourd'hui pour
+ *  l'année en cours. */
+fun weekChunks(year: Int, zone: ZoneId = ZoneId.systemDefault()): List<Pair<LocalDate, LocalDate>> {
     val yearEnd = minOf(LocalDate.of(year, 12, 31), LocalDate.now(zone))
     val chunks = mutableListOf<Pair<LocalDate, LocalDate>>()
-    var monthStart = LocalDate.of(year, 1, 1)
-    while (!monthStart.isAfter(yearEnd)) {
-        val monthEnd = minOf(monthStart.plusMonths(1).minusDays(1), yearEnd)
-        chunks += monthStart to monthEnd
-        monthStart = monthStart.plusMonths(1)
+    var weekStart = LocalDate.of(year, 1, 1)
+    while (!weekStart.isAfter(yearEnd)) {
+        val weekEnd = minOf(weekStart.plusDays(6), yearEnd)
+        chunks += weekStart to weekEnd
+        weekStart = weekStart.plusDays(7)
     }
     return chunks.reversed()
 }
