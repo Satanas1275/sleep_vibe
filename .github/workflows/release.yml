@@ -9,7 +9,14 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Permet de publier sans pousser de tag à la main : le job crée le tag lui-même,
+  # au commit sur lequel on le déclenche.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version à publier, tag compris (ex. v2.4)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -35,6 +42,17 @@ jobs:
       - name: assembleRelease
         run: ./gradlew assembleRelease --stacktrace
 
+      # La version vient du tag poussé, ou du paramètre quand on déclenche à la main.
+      - name: Version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
       # Le nom du fichier porte la version : un APK téléchargé six mois plus tard reste
       # identifiable sans l'ouvrir.
       - name: Renommer l'APK
@@ -42,16 +60,19 @@ jobs:
           set -euo pipefail
           apk=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
           test -n "$apk"
-          mv "$apk" "sommeil-${GITHUB_REF_NAME}.apk"
+          mv "$apk" "sommeil-${{ steps.v.outputs.tag }}.apk"
           ls -la sommeil-*.apk
 
+      # Crée le tag s'il n'existe pas encore, au commit courant.
       - name: Publier la release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: Sommeil ${{ steps.v.outputs.tag }}
           files: sommeil-*.apk
           generate_release_notes: true
           body: |
-            Installe l'APK ci-dessous : `adb install -r sommeil-${{ github.ref_name }}.apk`,
+            Installe l'APK ci-dessous : `adb install -r sommeil-${{ steps.v.outputs.tag }}.apk`,
             ou ouvre-le depuis le téléphone.
 
             Signé avec la clé de debug : bon pour une installation personnelle, pas pour le
