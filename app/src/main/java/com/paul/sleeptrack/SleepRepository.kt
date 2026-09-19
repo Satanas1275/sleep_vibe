@@ -146,14 +146,21 @@ suspend fun loadHealthData(
     )
 }
 
-suspend fun loadYear(
-    client: HealthConnectClient,
-    granted: Set<String>,
-    year: Int,
-    zone: ZoneId = ZoneId.systemDefault(),
-): HealthLoadResult = loadHealthData(
-    client, granted, LocalDate.of(year, 1, 1), LocalDate.of(year, 12, 31), zone, concurrent = false,
-)
+/** Découpe une année en tranches d'un mois, la plus récente en premier : on veut
+ *  afficher le mois courant tout de suite et combler le reste de l'année en tâche de
+ *  fond, plutôt que de faire attendre l'écran sur toute l'année d'un coup. Bornée à
+ *  aujourd'hui pour l'année en cours. */
+fun monthChunks(year: Int, zone: ZoneId = ZoneId.systemDefault()): List<Pair<LocalDate, LocalDate>> {
+    val yearEnd = minOf(LocalDate.of(year, 12, 31), LocalDate.now(zone))
+    val chunks = mutableListOf<Pair<LocalDate, LocalDate>>()
+    var monthStart = LocalDate.of(year, 1, 1)
+    while (!monthStart.isAfter(yearEnd)) {
+        val monthEnd = minOf(monthStart.plusMonths(1).minusDays(1), yearEnd)
+        chunks += monthStart to monthEnd
+        monthStart = monthStart.plusMonths(1)
+    }
+    return chunks.reversed()
+}
 
 /** Résultat d'une sous-lecture : les données glanées, et si elle a dû s'arrêter en
  *  route à cause du rate limiter. */

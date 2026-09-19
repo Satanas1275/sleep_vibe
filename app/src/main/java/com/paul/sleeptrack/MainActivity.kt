@@ -97,77 +97,95 @@ private fun SleepApp() {
             return@LaunchedEffect
         }
         val client = HealthConnectClient.getOrCreate(context)
-        var granted: Set<String> = emptySet()
-        state = try {
+        try {
             // Un appel Health Connect (y compris la simple vérif des permissions) peut
             // rester bloqué sans jamais répondre plutôt que de renvoyer une erreur —
-            // ça s'est vu. Sans limite de temps, l'écran resterait sur "chargement"
-            // indéfiniment. 90s plutôt qu'un délai court : Health Connect peut aussi
-            // juste répondre lentement (par exemple encore essoufflé par un rate limit
-            // précédent) sans jamais planter, et couper trop tôt jetterait une lecture
-            // qui aurait fini par aboutir.
-            withTimeout(90_000) {
-                granted = client.permissionController.getGrantedPermissions()
-                if (DATA_PERMISSIONS.values.none { it in granted }) {
-                    if (archived.isEmpty()) {
-                        UiState.NeedsPermission
-                    } else {
-                        UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
-                    }
+            // ça s'est vu. Cet appel-là est local et léger, 15s est largement assez.
+            val granted = withTimeout(15_000) { client.permissionController.getGrantedPermissions() }
+            if (DATA_PERMISSIONS.values.none { it in granted }) {
+                state = if (archived.isEmpty()) {
+                    UiState.NeedsPermission
                 } else {
-                    val today = LocalDate.now()
-                    val alreadyFetched = year in fetchedYears.value
-                    val fresh = when {
-                        // Année passée déjà lue une fois cette session : ses données ne
-                        // bougent plus, inutile de retaper Health Connect à chaque retour
-                        // au premier plan — c'est ça qui faisait taper le rate limit en
-                        // boucle. On se contente de l'archive.
-                        alreadyFetched && year != today.year -> HealthLoadResult(HealthData(), rateLimited = false)
-                        // Année en cours déjà lue une fois : on ne relit que les derniers
-                        // jours (seuls susceptibles d'avoir changé), pas toute l'année.
-                        alreadyFetched -> loadHealthData(client, granted, today.minusDays(3), today)
-                        // Premier passage sur cette année cette session : lecture complète,
-                        // obligatoire au moins une fois.
-                        else -> loadYear(client, granted, year)
+                    UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
+                }
+                return@LaunchedEffect
+            }
+            val today = LocalDate.now()
+            val alreadyFetched = year in fetchedYears.value
+            when {
+                // Année passée déjà lue une fois cette session : ses données ne
+                // bougent plus, inutile de retaper Health Connect à chaque retour au
+                // premier plan — c'est ça qui faisait taper le rate limit en boucle.
+                // On se contente de l'archive.
+                alreadyFetched && year != today.year -> {
+                    state = UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
+                }
+                // Année en cours déjà lue une fois : on ne relit que les derniers
+                // jours (seuls susceptibles d'avoir changé), pas toute l'année.
+                alreadyFetched -> {
+                    val fresh = try {
+                        withTimeout(30_000) { loadHealthData(client, granted, today.minusDays(3), today) }
+                    } catch (e: TimeoutCancellationException) {
+                        HealthLoadResult(HealthData(), rateLimited = true)
                     }
-                    if (!alreadyFetched) fetchedYears.value = fetchedYears.value + year
                     val data = archived + fresh.data
                     withContext(Dispatchers.IO) { Archive.merge(context, data) }
-                    // Le widget et les rappels lisent ce cache : on le rafraîchit à chaque
-                    // passage sur l'année en cours.
                     if (year == today.year) {
                         DataCache.save(context, data)
                         updateAllWidgets(context)
                     }
-                    // Le rate limiter de Health Connect a pu couper la lecture en route :
-                    // on affiche quand même ce qu'on a (au pire, ce qui était déjà en
-                    // archive), avec un avertissement et un bouton pour réessayer, plutôt
-                    // que de bloquer tout l'écran sur une erreur.
                     val warning = if (fresh.rateLimited) {
                         "Health Connect a limité les requêtes : certaines données récentes n'ont peut-être pas pu être lues. Réessaie dans quelques instants."
                     } else {
                         null
                     }
-                    UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
+                    state = UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
+                }
+                // Premier passage sur cette année cette session : on lit le mois le
+                // plus récent en premier (affichage rapide), puis on comble le reste
+                // de l'année mois par mois en tâche de fond, chaque mois lu venant
+                // enrichir l'écran et l'archive au fur et à mesure — plutôt que de
+                // faire attendre l'écran sur l'année entière d'un coup.
+                else -> {
+                    var accumulated = archived
+                    var anyIssue = false
+                    for ((from, to) in monthChunks(year)) {
+                        val result = try {
+                            withTimeout(25_000) { loadHealthData(client, granted, from, to, concurrent = false) }
+                        } catch (e: TimeoutCancellationException) {
+                            HealthLoadResult(HealthData(), rateLimited = true)
+                        }
+                        anyIssue = anyIssue || result.rateLimited
+                        accumulated += result.data
+                        withContext(Dispatchers.IO) { Archive.merge(context, accumulated) }
+                        if (year == today.year) {
+                            DataCache.save(context, accumulated)
+                            updateAllWidgets(context)
+                        }
+                        val warning = if (anyIssue) {
+                            "Health Connect a limité ou ralenti certaines requêtes : des mois plus anciens n'ont peut-être pas encore été chargés. Réessaie plus tard pour compléter."
+                        } else {
+                            null
+                        }
+                        state = UiState.Ready(accumulated, REQUESTED_PERMISSIONS - granted, warning)
+                    }
+                    fetchedYears.value = fetchedYears.value + year
                 }
             }
-        } catch (e: TimeoutCancellationException) {
-            // Une vraie panne (Health Connect qui ne répond plus) : contrairement à une
-            // CancellationException "normale" (effet redémarré par Compose), il faut
-            // ici mettre à jour `state` — sinon l'écran reste bloqué sur "chargement"
-            // pour de bon.
-            val message = "La lecture prend plus de temps que prévu (Health Connect est peut-être encore ralenti). Réessaie dans quelques instants."
-            if (archived.isEmpty()) UiState.Error(message) else UiState.Ready(archived, REQUESTED_PERMISSIONS - granted, warning = message)
         } catch (e: CancellationException) {
             // L'effet a été annulé (changement d'année/écran pendant le chargement) :
             // on ne doit surtout pas continuer à écrire dans `state` après coup, sous
-            // peine de "The coroutine scope left the composition".
+            // peine de "The coroutine scope left the composition". Une CancellationException
+            // ici est forcément une vraie annulation Compose : chaque appel Health
+            // Connect a désormais son propre withTimeout local, donc plus de
+            // TimeoutCancellationException à distinguer à ce niveau.
             throw e
         } catch (e: Exception) {
-            // Un vrai imprévu (le rate limit ne devrait plus arriver jusqu'ici : les
-            // lectures dans SleepRepository le gèrent déjà en interne et renvoient du
-            // partiel). S'il y a quand même quelque chose en archive, on préfère
-            // l'afficher avec un avertissement plutôt que de bloquer tout l'écran.
+            // Un vrai imprévu (le rate limit / timeout ne devraient plus arriver
+            // jusqu'ici : chaque lecture Health Connect les gère déjà en interne, page
+            // par page ou mois par mois, et renvoie du partiel plutôt que de jeter).
+            // S'il y a quand même quelque chose en archive, on préfère l'afficher avec
+            // un avertissement plutôt que de bloquer tout l'écran.
             val isRateLimit = e.message?.contains("rate limit", ignoreCase = true) == true ||
                 e.message?.contains("quota", ignoreCase = true) == true
             val message = if (isRateLimit) {
@@ -175,10 +193,13 @@ private fun SleepApp() {
             } else {
                 e.message ?: e.javaClass.simpleName
             }
-            if (archived.isEmpty()) {
+            state = if (archived.isEmpty()) {
                 UiState.Error(message)
             } else {
-                UiState.Ready(archived, REQUESTED_PERMISSIONS - granted, warning = message)
+                // On ne connaît pas forcément `granted` ici si le souci vient de la
+                // vérif de permission elle-même : REQUESTED_PERMISSIONS par défaut,
+                // c'est juste utilisé pour un badge, pas critique.
+                UiState.Ready(archived, REQUESTED_PERMISSIONS, warning = message)
             }
         }
     }
