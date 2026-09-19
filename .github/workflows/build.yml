@@ -1,0 +1,45 @@
+# Compile l'app à chaque push. Le dépôt n'avait rien qui vérifie qu'il compile, et les
+# ML Kit GenAI APIs sont en Beta : un nom de classe qui bouge entre deux versions ne se
+# voit qu'ici. L'APK produit est gardé en artéfact, de quoi l'installer sans rien compiler
+# soi-même.
+name: Compilation
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  assemble:
+    name: assembleDebug
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Accepte les licences et expose sdkmanager ; le projet compile en SDK 36, que
+      # l'image du runner ne fournit pas toujours. AGP le récupère alors lui-même.
+      - name: SDK Android
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: assembleDebug
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Garder l'APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
