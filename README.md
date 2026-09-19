@@ -136,6 +136,10 @@ Puis :
 
 L'APK est produit dans `app/build/outputs/apk/debug/`.
 
+Chaque push est aussi compilé par GitHub Actions
+([.github/workflows/build.yml](.github/workflows/build.yml)), qui garde l'APK en artéfact :
+de quoi l'installer sans rien compiler soi-même.
+
 ## Installer
 
 ```
