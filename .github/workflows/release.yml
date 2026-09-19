@@ -1,0 +1,58 @@
+# Publie une release à partir d'un tag `vX.Y`. L'APK est compilé ici plutôt qu'envoyé
+# depuis un poste : c'est le même runner que la CI, donc le même résultat que ce qui a été
+# vérifié sur la branche.
+#
+# L'APK est signé avec la clé de debug (voir app/build.gradle.kts) : suffisant pour une
+# installation personnelle, pas pour le Play Store.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: APK et release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: assembleRelease
+        run: ./gradlew assembleRelease --stacktrace
+
+      # Le nom du fichier porte la version : un APK téléchargé six mois plus tard reste
+      # identifiable sans l'ouvrir.
+      - name: Renommer l'APK
+        run: |
+          set -euo pipefail
+          apk=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          test -n "$apk"
+          mv "$apk" "sommeil-${GITHUB_REF_NAME}.apk"
+          ls -la sommeil-*.apk
+
+      - name: Publier la release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: sommeil-*.apk
+          generate_release_notes: true
+          body: |
+            Installe l'APK ci-dessous : `adb install -r sommeil-${{ github.ref_name }}.apk`,
+            ou ouvre-le depuis le téléphone.
+
+            Signé avec la clé de debug : bon pour une installation personnelle, pas pour le
+            Play Store. Android demandera d'autoriser l'installation depuis cette source.

@@ -25,11 +25,9 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Accepte les licences et expose sdkmanager ; le projet compile en SDK 36, que
-      # l'image du runner ne fournit pas toujours. AGP le récupère alors lui-même.
-      - name: SDK Android
-        uses: android-actions/setup-android@v3
-
+      # Pas de setup-android ici : l'action installe le paquet `tools`, retiré du SDK
+      # depuis, et échoue dessus. L'image du runner fournit déjà le SDK avec ses licences
+      # acceptées (ANDROID_HOME) ; AGP télécharge lui-même la plateforme 36 si elle manque.
       - name: Gradle
         uses: gradle/actions/setup-gradle@v4
 
