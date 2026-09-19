@@ -31,8 +31,20 @@ jobs:
       - name: Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # Pas de --stacktrace : sur une erreur de compilation il noie les lignes « e: »
+      # sous deux cents lignes de pile Gradle, qui n'apprennent rien.
       - name: assembleDebug
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --console=plain 2>&1 | tee /tmp/build.log
+
+      # Republie les erreurs à la toute fin du log, où elles se lisent sans dérouler.
+      - name: Erreurs de compilation
+        if: failure()
+        run: |
+          echo "::group::Erreurs Kotlin"
+          grep -E '^e: |^error: |FAILURE: ' /tmp/build.log | head -n 60 || echo "(aucune ligne « e: » trouvée)"
+          echo "::endgroup::"
 
       - name: Garder l'APK
         if: success()
