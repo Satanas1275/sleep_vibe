@@ -34,8 +34,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.time.Duration
 import java.time.LocalDate
 
@@ -95,50 +97,64 @@ private fun SleepApp() {
             return@LaunchedEffect
         }
         val client = HealthConnectClient.getOrCreate(context)
-        val granted = client.permissionController.getGrantedPermissions()
+        var granted: Set<String> = emptySet()
         state = try {
-            if (DATA_PERMISSIONS.values.none { it in granted }) {
-                if (archived.isEmpty()) {
-                    UiState.NeedsPermission
+            // Un appel Health Connect (y compris la simple vérif des permissions) peut
+            // rester bloqué sans jamais répondre plutôt que de renvoyer une erreur —
+            // ça s'est vu. Sans limite de temps, l'écran resterait sur "chargement"
+            // indéfiniment. Passé ce délai, on abandonne et on retombe sur l'archive.
+            withTimeout(25_000) {
+                granted = client.permissionController.getGrantedPermissions()
+                if (DATA_PERMISSIONS.values.none { it in granted }) {
+                    if (archived.isEmpty()) {
+                        UiState.NeedsPermission
+                    } else {
+                        UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
+                    }
                 } else {
-                    UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
+                    val today = LocalDate.now()
+                    val alreadyFetched = year in fetchedYears.value
+                    val fresh = when {
+                        // Année passée déjà lue une fois cette session : ses données ne
+                        // bougent plus, inutile de retaper Health Connect à chaque retour
+                        // au premier plan — c'est ça qui faisait taper le rate limit en
+                        // boucle. On se contente de l'archive.
+                        alreadyFetched && year != today.year -> HealthLoadResult(HealthData(), rateLimited = false)
+                        // Année en cours déjà lue une fois : on ne relit que les derniers
+                        // jours (seuls susceptibles d'avoir changé), pas toute l'année.
+                        alreadyFetched -> loadHealthData(client, granted, today.minusDays(3), today)
+                        // Premier passage sur cette année cette session : lecture complète,
+                        // obligatoire au moins une fois.
+                        else -> loadYear(client, granted, year)
+                    }
+                    if (!alreadyFetched) fetchedYears.value = fetchedYears.value + year
+                    val data = archived + fresh.data
+                    withContext(Dispatchers.IO) { Archive.merge(context, data) }
+                    // Le widget et les rappels lisent ce cache : on le rafraîchit à chaque
+                    // passage sur l'année en cours.
+                    if (year == today.year) {
+                        DataCache.save(context, data)
+                        updateAllWidgets(context)
+                    }
+                    // Le rate limiter de Health Connect a pu couper la lecture en route :
+                    // on affiche quand même ce qu'on a (au pire, ce qui était déjà en
+                    // archive), avec un avertissement et un bouton pour réessayer, plutôt
+                    // que de bloquer tout l'écran sur une erreur.
+                    val warning = if (fresh.rateLimited) {
+                        "Health Connect a limité les requêtes : certaines données récentes n'ont peut-être pas pu être lues. Réessaie dans quelques instants."
+                    } else {
+                        null
+                    }
+                    UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
                 }
-            } else {
-                val today = LocalDate.now()
-                val alreadyFetched = year in fetchedYears.value
-                val fresh = when {
-                    // Année passée déjà lue une fois cette session : ses données ne
-                    // bougent plus, inutile de retaper Health Connect à chaque retour
-                    // au premier plan — c'est ça qui faisait taper le rate limit en
-                    // boucle. On se contente de l'archive.
-                    alreadyFetched && year != today.year -> HealthLoadResult(HealthData(), rateLimited = false)
-                    // Année en cours déjà lue une fois : on ne relit que les derniers
-                    // jours (seuls susceptibles d'avoir changé), pas toute l'année.
-                    alreadyFetched -> loadHealthData(client, granted, today.minusDays(3), today)
-                    // Premier passage sur cette année cette session : lecture complète,
-                    // obligatoire au moins une fois.
-                    else -> loadYear(client, granted, year)
-                }
-                if (!alreadyFetched) fetchedYears.value = fetchedYears.value + year
-                val data = archived + fresh.data
-                withContext(Dispatchers.IO) { Archive.merge(context, data) }
-                // Le widget et les rappels lisent ce cache : on le rafraîchit à chaque
-                // passage sur l'année en cours.
-                if (year == today.year) {
-                    DataCache.save(context, data)
-                    updateAllWidgets(context)
-                }
-                // Le rate limiter de Health Connect a pu couper la lecture en route :
-                // on affiche quand même ce qu'on a (au pire, ce qui était déjà en
-                // archive), avec un avertissement et un bouton pour réessayer, plutôt
-                // que de bloquer tout l'écran sur une erreur.
-                val warning = if (fresh.rateLimited) {
-                    "Health Connect a limité les requêtes : certaines données récentes n'ont peut-être pas pu être lues. Réessaie dans quelques instants."
-                } else {
-                    null
-                }
-                UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
             }
+        } catch (e: TimeoutCancellationException) {
+            // Une vraie panne (Health Connect qui ne répond plus) : contrairement à une
+            // CancellationException "normale" (effet redémarré par Compose), il faut
+            // ici mettre à jour `state` — sinon l'écran reste bloqué sur "chargement"
+            // pour de bon.
+            val message = "Health Connect ne répond pas. Réessaie dans quelques instants."
+            if (archived.isEmpty()) UiState.Error(message) else UiState.Ready(archived, REQUESTED_PERMISSIONS - granted, warning = message)
         } catch (e: CancellationException) {
             // L'effet a été annulé (changement d'année/écran pendant le chargement) :
             // on ne doit surtout pas continuer à écrire dans `state` après coup, sous
