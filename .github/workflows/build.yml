@@ -25,16 +25,26 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Accepte les licences et expose sdkmanager ; le projet compile en SDK 36, que
-      # l'image du runner ne fournit pas toujours. AGP le récupère alors lui-même.
-      - name: SDK Android
-        uses: android-actions/setup-android@v3
-
+      # Pas de setup-android ici : l'action installe le paquet `tools`, retiré du SDK
+      # depuis, et échoue dessus. L'image du runner fournit déjà le SDK avec ses licences
+      # acceptées (ANDROID_HOME) ; AGP télécharge lui-même la plateforme 36 si elle manque.
       - name: Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # Pas de --stacktrace : sur une erreur de compilation il noie les lignes « e: »
+      # sous deux cents lignes de pile Gradle, qui n'apprennent rien.
       - name: assembleDebug
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --console=plain 2>&1 | tee /tmp/build.log
+
+      # Republie les erreurs à la toute fin du log, où elles se lisent sans dérouler.
+      - name: Erreurs de compilation
+        if: failure()
+        run: |
+          echo "::group::Erreurs Kotlin"
+          grep -E '^e: |^error: |FAILURE: ' /tmp/build.log | head -n 60 || echo "(aucune ligne « e: » trouvée)"
+          echo "::endgroup::"
 
       - name: Garder l'APK
         if: success()

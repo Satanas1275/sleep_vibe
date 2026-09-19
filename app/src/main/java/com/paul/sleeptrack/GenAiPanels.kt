@@ -47,6 +47,13 @@ class NanoState(val nano: Nano) {
     var expected by mutableStateOf(0L)
 
     val ready: Boolean get() = status == NanoStatus.READY
+
+    /**
+     * Rédige le résumé de la semaine. Exposé ici plutôt que d'obliger les appelants à
+     * traverser [nano] : le résumé se demande depuis l'écran principal et depuis les
+     * réglages, et `nano.nano.weeklyBrief(...)` se lit mal.
+     */
+    suspend fun weeklyBrief(data: HealthData): String? = nano.weeklyBrief(data)
 }
 
 /**
