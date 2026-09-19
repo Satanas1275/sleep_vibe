@@ -102,8 +102,11 @@ private fun SleepApp() {
             // Un appel Health Connect (y compris la simple vérif des permissions) peut
             // rester bloqué sans jamais répondre plutôt que de renvoyer une erreur —
             // ça s'est vu. Sans limite de temps, l'écran resterait sur "chargement"
-            // indéfiniment. Passé ce délai, on abandonne et on retombe sur l'archive.
-            withTimeout(25_000) {
+            // indéfiniment. 90s plutôt qu'un délai court : Health Connect peut aussi
+            // juste répondre lentement (par exemple encore essoufflé par un rate limit
+            // précédent) sans jamais planter, et couper trop tôt jetterait une lecture
+            // qui aurait fini par aboutir.
+            withTimeout(90_000) {
                 granted = client.permissionController.getGrantedPermissions()
                 if (DATA_PERMISSIONS.values.none { it in granted }) {
                     if (archived.isEmpty()) {
@@ -153,7 +156,7 @@ private fun SleepApp() {
             // CancellationException "normale" (effet redémarré par Compose), il faut
             // ici mettre à jour `state` — sinon l'écran reste bloqué sur "chargement"
             // pour de bon.
-            val message = "Health Connect ne répond pas. Réessaie dans quelques instants."
+            val message = "La lecture prend plus de temps que prévu (Health Connect est peut-être encore ralenti). Réessaie dans quelques instants."
             if (archived.isEmpty()) UiState.Error(message) else UiState.Ready(archived, REQUESTED_PERMISSIONS - granted, warning = message)
         } catch (e: CancellationException) {
             // L'effet a été annulé (changement d'année/écran pendant le chargement) :

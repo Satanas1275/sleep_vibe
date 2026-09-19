@@ -194,7 +194,7 @@ suspend fun freshData(context: Context): HealthData {
     val cached = DataCache.load(context)
     if (HealthConnectClient.getSdkStatus(context) != HealthConnectClient.SDK_AVAILABLE) return cached
     return runCatching {
-        withTimeout(25_000) {
+        withTimeout(90_000) {
             val client = HealthConnectClient.getOrCreate(context)
             val granted = client.permissionController.getGrantedPermissions()
             if (PERMISSION_READ_BACKGROUND !in granted) return@withTimeout cached
