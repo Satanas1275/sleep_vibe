@@ -198,7 +198,7 @@ suspend fun freshData(context: Context): HealthData {
         if (PERMISSION_READ_BACKGROUND !in granted) return cached
         val today = LocalDate.now()
         val fresh = loadHealthData(client, granted, today.minusDays(21), today)
-        val merged = cached + fresh
+        val merged = cached + fresh.data
         DataCache.save(context, merged)
         merged
     }.getOrDefault(cached)

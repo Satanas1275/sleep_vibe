@@ -50,36 +50,47 @@ private val NOT_ASLEEP = setOf(
     SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
 )
 
-/** Réessaie un appel Health Connect qui se fait jeter par le rate limiter, au lieu de
- *  remonter l'erreur direct à l'écran. On ne connaît pas la classe exacte de
- *  l'exception que la lib remonte pour un rate limit (ni HealthConnectException, ni
- *  IllegalStateException ne correspondent en pratique — testé), donc on détecte plutôt
- *  sur le contenu du message. Toute autre erreur est relancée immédiatement, sans
- *  retry inutile. Backoff progressif, 4 essais max. */
-private suspend fun <T> retryOnRateLimit(maxAttempts: Int = 4, block: suspend () -> T): T {
-    var attempt = 0
-    var backoff = 800L
-    while (true) {
-        try {
-            return block()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val isRateLimit = e.message?.contains("rate limit", ignoreCase = true) == true ||
-                e.message?.contains("quota", ignoreCase = true) == true
-            attempt++
-            if (!isRateLimit || attempt >= maxAttempts) throw e
-            delay(backoff)
-            backoff = (backoff * 2.5).toLong()
-        }
+/** Vrai si le message ressemble à un rate limit Health Connect. La classe exacte de
+ *  l'exception varie selon la version/l'appareil (ni HealthConnectException ni
+ *  IllegalStateException ne correspondent en pratique — testé), donc on se fie au
+ *  texte plutôt qu'au type. */
+private fun isRateLimitMessage(e: Throwable): Boolean =
+    e.message?.contains("rate limit", ignoreCase = true) == true ||
+        e.message?.contains("quota", ignoreCase = true) == true
+
+/** Essaie l'appel, et s'il se fait jeter pour rate limit, retente une fois après une
+ *  pause avant d'abandonner. Renvoie null si les deux tentatives échouent pour rate
+ *  limit — à l'appelant de garder ce qu'il a déjà accumulé plutôt que de tout perdre.
+ *  Toute autre erreur est relancée telle quelle : ce n'est pas à cette fonction de la
+ *  masquer. */
+private suspend fun <T> onceMoreOnRateLimit(block: suspend () -> T): T? = try {
+    block()
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    if (!isRateLimitMessage(e)) throw e
+    delay(2500)
+    try {
+        block()
+    } catch (e2: CancellationException) {
+        throw e2
+    } catch (e2: Exception) {
+        if (!isRateLimitMessage(e2)) throw e2
+        null
     }
 }
+
+/** Ce que renvoie une lecture : les données obtenues, et si le rate limiter de Health
+ *  Connect a forcé à s'arrêter en cours de route (dans ce cas, les données sont
+ *  partielles — pas fausses, juste incomplètes). */
+data class HealthLoadResult(val data: HealthData, val rateLimited: Boolean)
 
 /** Lit toutes les métriques autorisées entre deux dates incluses. `concurrent` contrôle
  *  la stratégie : en parallèle (rapide) pour les petites lectures fréquentes comme le
  *  rattrapage des derniers jours au resume, ou séquentiel + espacé (plus lent mais
  *  bien plus sûr) pour la grosse lecture initiale d'une année complète, où le volume
- *  de données rend un rate limit beaucoup plus probable. */
+ *  de données rend un rate limit beaucoup plus probable. Si Health Connect coupe la
+ *  lecture en route, on renvoie ce qui a déjà été récupéré plutôt que de tout perdre. */
 suspend fun loadHealthData(
     client: HealthConnectClient,
     granted: Set<String>,
@@ -87,34 +98,52 @@ suspend fun loadHealthData(
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
     concurrent: Boolean = true,
-): HealthData {
+): HealthLoadResult {
     suspend fun sleep() =
-        if (PERMISSION_READ_SLEEP in granted) retryOnRateLimit { readSleepByNight(client, from, to, zone) } else emptyMap()
+        if (PERMISSION_READ_SLEEP in granted) readSleepByNight(client, from, to, zone) else PartialResult(emptyMap(), false)
     suspend fun steps() =
-        if (PERMISSION_READ_STEPS in granted) retryOnRateLimit { readStepsByDay(client, from, to, zone) } else emptyMap()
+        if (PERMISSION_READ_STEPS in granted) readStepsByDay(client, from, to, zone) else PartialResult(emptyMap(), false)
     suspend fun heart() =
-        if (PERMISSION_READ_HEART in granted) retryOnRateLimit { readRestingHeartRate(client, from, to, zone) } else emptyMap()
+        if (PERMISSION_READ_HEART in granted) readRestingHeartRate(client, from, to, zone) else PartialResult(emptyMap(), false)
     suspend fun weight() =
-        if (PERMISSION_READ_WEIGHT in granted) retryOnRateLimit { readWeight(client, from, to, zone) } else emptyMap()
+        if (PERMISSION_READ_WEIGHT in granted) readWeight(client, from, to, zone) else PartialResult(emptyMap(), false)
 
-    return if (concurrent) {
+    // Petite classe locale juste pour porter les 4 résultats typés hors du bloc
+    // concurrent/séquentiel sans passer par une List hétérogène (qui perdrait les
+    // types précis et forcerait des casts non vérifiés).
+    data class FourResults(
+        val nights: PartialResult<Map<LocalDate, Duration>>,
+        val steps: PartialResult<Map<LocalDate, Long>>,
+        val heart: PartialResult<Map<LocalDate, Double>>,
+        val weight: PartialResult<Map<LocalDate, Double>>,
+    )
+
+    val results = if (concurrent) {
         coroutineScope {
-            val nights = async { sleep() }
-            val steps = async { steps() }
-            val heart = async { heart() }
-            val weight = async { weight() }
-            HealthData(nights.await(), steps.await(), heart.await(), weight.await())
+            val n = async { sleep() }
+            val s = async { steps() }
+            val h = async { heart() }
+            val w = async { weight() }
+            FourResults(n.await(), s.await(), h.await(), w.await())
         }
     } else {
-        val nights = sleep()
-        delay(200)
-        val steps = steps()
-        delay(200)
-        val heart = heart()
-        delay(200)
-        val weight = weight()
-        HealthData(nights, steps, heart, weight)
+        val n = sleep(); delay(200)
+        val s = steps(); delay(200)
+        val h = heart(); delay(200)
+        val w = weight()
+        FourResults(n, s, h, w)
     }
+
+    return HealthLoadResult(
+        data = HealthData(
+            nights = results.nights.data,
+            steps = results.steps.data,
+            heart = results.heart.data,
+            weight = results.weight.data,
+        ),
+        rateLimited = results.nights.rateLimited || results.steps.rateLimited ||
+            results.heart.rateLimited || results.weight.rateLimited,
+    )
 }
 
 suspend fun loadYear(
@@ -122,9 +151,13 @@ suspend fun loadYear(
     granted: Set<String>,
     year: Int,
     zone: ZoneId = ZoneId.systemDefault(),
-): HealthData = loadHealthData(
+): HealthLoadResult = loadHealthData(
     client, granted, LocalDate.of(year, 1, 1), LocalDate.of(year, 12, 31), zone, concurrent = false,
 )
+
+/** Résultat d'une sous-lecture : les données glanées, et si elle a dû s'arrêter en
+ *  route à cause du rate limiter. */
+private data class PartialResult<T>(val data: T, val rateLimited: Boolean)
 
 /** Durée de sommeil par nuit, la nuit étant rattachée à la date du réveil. */
 suspend fun readSleepByNight(
@@ -132,23 +165,30 @@ suspend fun readSleepByNight(
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): Map<LocalDate, Duration> {
+): PartialResult<Map<LocalDate, Duration>> {
     val start = from.minusDays(1).atStartOfDay(zone).toInstant()
     val end = to.plusDays(2).atStartOfDay(zone).toInstant()
     val intervalsByDate = mutableMapOf<LocalDate, MutableList<Pair<Instant, Instant>>>()
 
     var pageToken: String? = null
     var firstPage = true
+    var rateLimited = false
     do {
         if (!firstPage) delay(150)
         firstPage = false
-        val response = client.readRecords(
-            ReadRecordsRequest(
-                recordType = SleepSessionRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, end),
-                pageToken = pageToken,
+        val response = onceMoreOnRateLimit {
+            client.readRecords(
+                ReadRecordsRequest(
+                    recordType = SleepSessionRecord::class,
+                    timeRangeFilter = TimeRangeFilter.between(start, end),
+                    pageToken = pageToken,
+                )
             )
-        )
+        }
+        if (response == null) {
+            rateLimited = true
+            break
+        }
         for (session in response.records) {
             val date = session.endTime.atZone(zone).toLocalDate()
             if (date < from || date > to) continue
@@ -162,9 +202,10 @@ suspend fun readSleepByNight(
         pageToken = response.pageToken
     } while (pageToken != null)
 
-    return intervalsByDate
+    val result = intervalsByDate
         .mapValues { (_, intervals) -> mergedDuration(intervals) }
         .filterValues { !it.isZero }
+    return PartialResult(result, rateLimited)
 }
 
 // Plusieurs applis (montre + téléphone) peuvent enregistrer la même nuit : on fusionne les chevauchements.
@@ -191,11 +232,12 @@ suspend fun readStepsByDay(
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): Map<LocalDate, Long> {
+): PartialResult<Map<LocalDate, Long>> {
     val out = mutableMapOf<LocalDate, Long>()
     val limit = minOf(to.plusDays(1), LocalDate.now(zone).plusDays(1))
     var chunkStart = from
     var first = true
+    var rateLimited = false
     while (chunkStart.isBefore(limit)) {
         // Une année complète, c'est jusqu'à 12 appels d'affilée ; un petit espacement
         // évite de déclencher le rate limiter interne de Health Connect quand cette
@@ -203,20 +245,26 @@ suspend fun readStepsByDay(
         if (!first) delay(120)
         first = false
         val chunkEnd = minOf(chunkStart.plusMonths(1), limit)
-        val groups = client.aggregateGroupByPeriod(
-            AggregateGroupByPeriodRequest(
-                metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(chunkStart.atStartOfDay(), chunkEnd.atStartOfDay()),
-                timeRangeSlicer = Period.ofDays(1),
+        val groups = onceMoreOnRateLimit {
+            client.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(chunkStart.atStartOfDay(), chunkEnd.atStartOfDay()),
+                    timeRangeSlicer = Period.ofDays(1),
+                )
             )
-        )
+        }
+        if (groups == null) {
+            rateLimited = true
+            break
+        }
         for (group in groups) {
             val count = group.result[StepsRecord.COUNT_TOTAL] ?: continue
             if (count > 0) out[group.startTime.toLocalDate()] = count
         }
         chunkStart = chunkStart.plusMonths(1)
     }
-    return out
+    return PartialResult(out, rateLimited)
 }
 
 /** Fréquence cardiaque au repos : moyenne des relevés du jour. */
@@ -225,7 +273,7 @@ suspend fun readRestingHeartRate(
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): Map<LocalDate, Double> = readDailyMean(
+): PartialResult<Map<LocalDate, Double>> = readDailyMean(
     client, RestingHeartRateRecord::class, from, to, zone,
     at = { it.time }, value = { it.beatsPerMinute.toDouble() },
 )
@@ -236,7 +284,7 @@ suspend fun readWeight(
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): Map<LocalDate, Double> = readDailyMean(
+): PartialResult<Map<LocalDate, Double>> = readDailyMean(
     client, WeightRecord::class, from, to, zone,
     at = { it.time }, value = { it.weight.inKilograms },
 )
@@ -251,23 +299,30 @@ private suspend fun <T : Record> readDailyMean(
     zone: ZoneId,
     at: (T) -> Instant,
     value: (T) -> Double,
-): Map<LocalDate, Double> {
+): PartialResult<Map<LocalDate, Double>> {
     val start = from.atStartOfDay(zone).toInstant()
     val end = to.plusDays(1).atStartOfDay(zone).toInstant()
     val sums = mutableMapOf<LocalDate, Pair<Double, Int>>()
 
     var pageToken: String? = null
     var firstPage = true
+    var rateLimited = false
     do {
         if (!firstPage) delay(150)
         firstPage = false
-        val response = client.readRecords(
-            ReadRecordsRequest(
-                recordType = type,
-                timeRangeFilter = TimeRangeFilter.between(start, end),
-                pageToken = pageToken,
+        val response = onceMoreOnRateLimit {
+            client.readRecords(
+                ReadRecordsRequest(
+                    recordType = type,
+                    timeRangeFilter = TimeRangeFilter.between(start, end),
+                    pageToken = pageToken,
+                )
             )
-        )
+        }
+        if (response == null) {
+            rateLimited = true
+            break
+        }
         for (record in response.records) {
             val date = at(record).atZone(zone).toLocalDate()
             val (sum, n) = sums[date] ?: (0.0 to 0)
@@ -276,7 +331,8 @@ private suspend fun <T : Record> readDailyMean(
         pageToken = response.pageToken
     } while (pageToken != null)
 
-    return sums.mapValues { (_, acc) -> acc.first / acc.second }
+    val result = sums.mapValues { (_, acc) -> acc.first / acc.second }
+    return PartialResult(result, rateLimited)
 }
 
 fun demoHealthData(year: Int): HealthData {

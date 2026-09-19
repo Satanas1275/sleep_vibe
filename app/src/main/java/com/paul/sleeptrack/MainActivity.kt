@@ -57,7 +57,7 @@ private sealed interface UiState {
     data object Loading : UiState
     data object NotInstalled : UiState
     data object NeedsPermission : UiState
-    data class Ready(val data: HealthData, val missing: Set<String>) : UiState
+    data class Ready(val data: HealthData, val missing: Set<String>, val warning: String? = null) : UiState
     data class Error(val message: String) : UiState
 }
 
@@ -95,8 +95,8 @@ private fun SleepApp() {
             return@LaunchedEffect
         }
         val client = HealthConnectClient.getOrCreate(context)
+        val granted = client.permissionController.getGrantedPermissions()
         state = try {
-            val granted = client.permissionController.getGrantedPermissions()
             if (DATA_PERMISSIONS.values.none { it in granted }) {
                 if (archived.isEmpty()) {
                     UiState.NeedsPermission
@@ -111,7 +111,7 @@ private fun SleepApp() {
                     // bougent plus, inutile de retaper Health Connect à chaque retour
                     // au premier plan — c'est ça qui faisait taper le rate limit en
                     // boucle. On se contente de l'archive.
-                    alreadyFetched && year != today.year -> HealthData()
+                    alreadyFetched && year != today.year -> HealthLoadResult(HealthData(), rateLimited = false)
                     // Année en cours déjà lue une fois : on ne relit que les derniers
                     // jours (seuls susceptibles d'avoir changé), pas toute l'année.
                     alreadyFetched -> loadHealthData(client, granted, today.minusDays(3), today)
@@ -120,7 +120,7 @@ private fun SleepApp() {
                     else -> loadYear(client, granted, year)
                 }
                 if (!alreadyFetched) fetchedYears.value = fetchedYears.value + year
-                val data = archived + fresh
+                val data = archived + fresh.data
                 withContext(Dispatchers.IO) { Archive.merge(context, data) }
                 // Le widget et les rappels lisent ce cache : on le rafraîchit à chaque
                 // passage sur l'année en cours.
@@ -128,7 +128,16 @@ private fun SleepApp() {
                     DataCache.save(context, data)
                     updateAllWidgets(context)
                 }
-                UiState.Ready(data, REQUESTED_PERMISSIONS - granted)
+                // Le rate limiter de Health Connect a pu couper la lecture en route :
+                // on affiche quand même ce qu'on a (au pire, ce qui était déjà en
+                // archive), avec un avertissement et un bouton pour réessayer, plutôt
+                // que de bloquer tout l'écran sur une erreur.
+                val warning = if (fresh.rateLimited) {
+                    "Health Connect a limité les requêtes : certaines données récentes n'ont peut-être pas pu être lues. Réessaie dans quelques instants."
+                } else {
+                    null
+                }
+                UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
             }
         } catch (e: CancellationException) {
             // L'effet a été annulé (changement d'année/écran pendant le chargement) :
@@ -136,15 +145,21 @@ private fun SleepApp() {
             // peine de "The coroutine scope left the composition".
             throw e
         } catch (e: Exception) {
-            // On arrive ici seulement si retryOnRateLimit (dans SleepRepository) a
-            // épuisé ses tentatives : un vrai rate limit persistant, ou une autre
-            // erreur. Message dédié dans le premier cas, message brut sinon.
+            // Un vrai imprévu (le rate limit ne devrait plus arriver jusqu'ici : les
+            // lectures dans SleepRepository le gèrent déjà en interne et renvoient du
+            // partiel). S'il y a quand même quelque chose en archive, on préfère
+            // l'afficher avec un avertissement plutôt que de bloquer tout l'écran.
             val isRateLimit = e.message?.contains("rate limit", ignoreCase = true) == true ||
                 e.message?.contains("quota", ignoreCase = true) == true
-            if (isRateLimit) {
-                UiState.Error("Health Connect a limité les requêtes plus longtemps que prévu. Attends un peu avant de réessayer.")
+            val message = if (isRateLimit) {
+                "Health Connect a limité les requêtes plus longtemps que prévu. Attends un peu avant de réessayer."
             } else {
-                UiState.Error(e.message ?: e.javaClass.simpleName)
+                e.message ?: e.javaClass.simpleName
+            }
+            if (archived.isEmpty()) {
+                UiState.Error(message)
+            } else {
+                UiState.Ready(archived, REQUESTED_PERMISSIONS - granted, warning = message)
             }
         }
     }
@@ -209,6 +224,8 @@ private fun SleepApp() {
                     data = s.data,
                     missing = s.missing,
                     demo = demo,
+                    warning = s.warning,
+                    onRetry = { refreshKey++ },
                     onYear = { year = it },
                     onMetric = {
                         metric = it
@@ -232,6 +249,8 @@ private fun MainScreen(
     data: HealthData,
     missing: Set<String>,
     demo: Boolean,
+    warning: String? = null,
+    onRetry: () -> Unit = {},
     onYear: (Int) -> Unit,
     onMetric: (Metric) -> Unit,
     onRequestPermissions: () -> Unit,
@@ -272,6 +291,16 @@ private fun MainScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Mode démo (données fictives)", color = Palette.levels[2], fontSize = 13.sp, modifier = Modifier.weight(1f))
                 TextButton(onClick = onExitDemo) { Text("Quitter", color = Palette.text) }
+            }
+        }
+
+        if (warning != null) {
+            // Rate limit Health Connect ou autre pépin en cours de lecture : on le
+            // signale sans bloquer l'écran, les données déjà là (archive + ce qui a
+            // pu être lu) restent affichées en dessous.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(warning, color = Palette.levels[2], fontSize = 13.sp, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRetry) { Text("Réessayer", color = Palette.text) }
             }
         }
 
