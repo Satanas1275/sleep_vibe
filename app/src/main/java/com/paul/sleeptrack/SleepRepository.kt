@@ -157,7 +157,7 @@ suspend fun loadYear(
 
 /** Résultat d'une sous-lecture : les données glanées, et si elle a dû s'arrêter en
  *  route à cause du rate limiter. */
-private data class PartialResult<T>(val data: T, val rateLimited: Boolean)
+data class PartialResult<T>(val data: T, val rateLimited: Boolean)
 
 /** Durée de sommeil par nuit, la nuit étant rattachée à la date du réveil. */
 suspend fun readSleepByNight(
