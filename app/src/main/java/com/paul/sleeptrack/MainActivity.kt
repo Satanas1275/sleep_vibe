@@ -175,13 +175,14 @@ private fun SleepApp() {
                     withContext(Dispatchers.IO) { Archive.merge(context, accumulated) }
                     state = UiState.Ready(accumulated, REQUESTED_PERMISSIONS - granted, warning())
 
+                    var consecutiveTimeouts = 0
                     for ((from, to) in weekChunks(year)) {
                         if (PERMISSION_READ_SLEEP !in granted) {
                             Log.w("SleepTrack-HC", "Permission sommeil non accordée : lectures nocturnes sautées")
                             break
                         }
                         val result = try {
-                            withTimeout(45_000) { readSleepByNight(client, from, to) }
+                            withTimeout(120_000) { readSleepByNight(client, from, to) }
                         } catch (e: TimeoutCancellationException) {
                             Log.w("SleepTrack-HC", "Timeout sommeil $from..$to")
                             PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
@@ -203,7 +204,19 @@ private fun SleepApp() {
                         // Inutile de continuer à taper Health Connect si le rate
                         // limiter a déjà dit stop : on garde ce qui est lu et on laisse
                         // l'utilisateur relancer à la prochaine ouverture.
-                        if (result.rateLimited) break
+                        if (result.rateLimited) {
+                            consecutiveTimeouts =
+                                if (result.data.isEmpty()) consecutiveTimeouts + 1 else 0
+                            // Un timeout ponctuel n'est pas une raison de tout arrêter :
+                            // on continue vers des semaines plus anciennes (elles peuvent
+                            // être rapides). Mais si ça rame trois semaines de suite, on
+                            // abandonne pour ne pas laisser l'écran planter indéfiniment.
+                            if (consecutiveTimeouts >= 3) {
+                                Log.w("SleepTrack-HC", "Trop de timeouts sommeil consécutifs, on s'arrête")
+                                break
+                            }
+                            continue
+                        }
                     }
                     fetchedYears.value = fetchedYears.value + year
                 }

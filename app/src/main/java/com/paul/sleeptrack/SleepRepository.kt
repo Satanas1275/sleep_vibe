@@ -252,6 +252,7 @@ suspend fun readSleepByNight(
         if (!firstPage) delay(150)
         firstPage = false
         pages++
+        val pageStart = System.currentTimeMillis()
         val response = onceMoreOnRateLimit {
             client.readRecords(
                 ReadRecordsRequest(
@@ -265,8 +266,10 @@ suspend fun readSleepByNight(
             rateLimited = true
             break
         }
+        sessionsSeen += response.records.size
+        Log.i(TAG, "Sommeil $from..$to : page $pages (${response.records.size} sessions, " +
+            "cumulé $sessionsSeen) en ${System.currentTimeMillis() - pageStart} ms")
         for (session in response.records) {
-            sessionsSeen++
             val date = session.endTime.atZone(zone).toLocalDate()
             if (date < from || date > to) continue
             // Certains fournisseurs (Health Sync sur Huawei Watch GT4) classent tous les
