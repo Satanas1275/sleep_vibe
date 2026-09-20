@@ -240,6 +240,7 @@ suspend fun readSleepByNight(
     val runStart = System.currentTimeMillis()
     val start = from.minusDays(1).atStartOfDay(zone).toInstant()
     val end = to.plusDays(2).atStartOfDay(zone).toInstant()
+    Log.i(TAG, "Sommeil : début lecture $from..$to")
     val intervalsByDate = mutableMapOf<LocalDate, MutableList<Pair<Instant, Instant>>>()
 
     var pageToken: String? = null

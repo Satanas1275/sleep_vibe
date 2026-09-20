@@ -183,6 +183,12 @@ private fun SleepApp() {
                         val result = try {
                             withTimeout(45_000) { readSleepByNight(client, from, to) }
                         } catch (e: TimeoutCancellationException) {
+                            Log.w("SleepTrack-HC", "Timeout sommeil $from..$to")
+                            PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
+                        } catch (e: Exception) {
+                            // Une lecture qui coince ne doit pas faire planter tout le
+                            // chargement : on loggue, on marque le partiel et on passe.
+                            Log.w("SleepTrack-HC", "Échec lecture sommeil $from..$to : ${e.message}", e)
                             PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
                         }
                         Log.i("SleepTrack-HC", "Sommeil $from..$to : ${result.data.size} nuits, rateLimited=${result.rateLimited}")
