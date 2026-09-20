@@ -123,13 +123,32 @@ private fun SleepApp() {
                     state = UiState.Ready(archived, REQUESTED_PERMISSIONS - granted)
                 }
                 // Année en cours déjà lue une fois : on ne relit que les derniers
-                // jours (seuls susceptibles d'avoir changé), pas toute l'année.
+                // jours (seuls susceptibles d'avoir changé), pas toute l'année. La
+                // table sommeil peut être énorme (des milliers de fragments écrits par
+                // une app de synchro) : on borne chaque sous-lecture pour ne jamais
+                // bloquer le lancement là-dessus.
                 alreadyFetched -> {
-                    val fresh = try {
-                        withTimeout(30_000) { loadHealthData(client, granted, today.minusDays(3), today) }
+                    val aggregatePart = try {
+                        withTimeout(20_000) { loadAggregated(client, granted, today.minusDays(3), today) }
                     } catch (e: TimeoutCancellationException) {
-                        HealthLoadResult(HealthData(), rateLimited = true)
+                        PartialResult(HealthData(), rateLimited = true)
                     }
+                    val sleepPart = if (PERMISSION_READ_SLEEP in granted) {
+                        try {
+                            withTimeout(10_000) { readSleepByNight(client, today.minusDays(3), today) }
+                        } catch (e: TimeoutCancellationException) {
+                            PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
+                        } catch (e: Exception) {
+                            Log.w("SleepTrack-HC", "Échec sommeil récent : ${e.message}", e)
+                            PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
+                        }
+                    } else {
+                        PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = false)
+                    }
+                    val fresh = HealthLoadResult(
+                        data = aggregatePart.data + HealthData(nights = sleepPart.data),
+                        rateLimited = aggregatePart.rateLimited || sleepPart.rateLimited,
+                    )
                     val data = archived + fresh.data
                     withContext(Dispatchers.IO) { Archive.merge(context, data) }
                     if (year == today.year) {
@@ -137,7 +156,7 @@ private fun SleepApp() {
                         updateAllWidgets(context)
                     }
                     val warning = if (fresh.rateLimited) {
-                        "Health Connect a limité les requêtes : certaines données récentes n'ont peut-être pas pu être lues. Réessaie dans quelques instants."
+                        "Health Connect a limité ou ralenti certaines requêtes : des données récentes n'ont peut-être pas pu être lues."
                     } else {
                         null
                     }
