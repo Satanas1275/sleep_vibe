@@ -359,9 +359,14 @@ private suspend fun aggregateDaily(
             client.aggregateGroupByPeriod(
                 AggregateGroupByPeriodRequest(
                     metrics = setOf(metric),
+                    // Obligatoire : en découpe quotidienne, AggregateGroupByPeriodRequest
+                    // exige un filtre par LocalDateTime (le découpage se fait dans le
+                    // fuseau local de l'appareil) ; un filtre par Instant lève
+                    // "Either use TimeRangeFilter with LocalDateTime or
+                    // AggregateGroupByDurationRequest".
                     timeRangeFilter = TimeRangeFilter.between(
-                        bucketStart.atStartOfDay(zone).toInstant(),
-                        bucketEnd.atStartOfDay(zone).toInstant(),
+                        bucketStart.atStartOfDay(),
+                        bucketEnd.atStartOfDay(),
                     ),
                     timeRangeSlicer = Period.ofDays(1),
                 )
