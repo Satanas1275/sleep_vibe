@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -102,6 +103,7 @@ private fun SleepApp() {
             // rester bloqué sans jamais répondre plutôt que de renvoyer une erreur —
             // ça s'est vu. Cet appel-là est local et léger, 15s est largement assez.
             val granted = withTimeout(15_000) { client.permissionController.getGrantedPermissions() }
+            Log.i("SleepTrack-HC", "Permissions Health Connect accordées : ${granted.sorted()}")
             if (DATA_PERMISSIONS.values.none { it in granted }) {
                 state = if (archived.isEmpty()) {
                     UiState.NeedsPermission
@@ -174,11 +176,16 @@ private fun SleepApp() {
                     state = UiState.Ready(accumulated, REQUESTED_PERMISSIONS - granted, warning())
 
                     for ((from, to) in weekChunks(year)) {
+                        if (PERMISSION_READ_SLEEP !in granted) {
+                            Log.w("SleepTrack-HC", "Permission sommeil non accordée : lectures nocturnes sautées")
+                            break
+                        }
                         val result = try {
                             withTimeout(45_000) { readSleepByNight(client, from, to) }
                         } catch (e: TimeoutCancellationException) {
                             PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
                         }
+                        Log.i("SleepTrack-HC", "Sommeil $from..$to : ${result.data.size} nuits, rateLimited=${result.rateLimited}")
                         anyIssue = anyIssue || result.rateLimited
                         accumulated = accumulated + HealthData(nights = result.data)
                         withContext(Dispatchers.IO) { Archive.merge(context, accumulated) }

@@ -237,6 +237,7 @@ suspend fun readSleepByNight(
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
 ): PartialResult<Map<LocalDate, Duration>> {
+    val runStart = System.currentTimeMillis()
     val start = from.minusDays(1).atStartOfDay(zone).toInstant()
     val end = to.plusDays(2).atStartOfDay(zone).toInstant()
     val intervalsByDate = mutableMapOf<LocalDate, MutableList<Pair<Instant, Instant>>>()
@@ -244,9 +245,12 @@ suspend fun readSleepByNight(
     var pageToken: String? = null
     var firstPage = true
     var rateLimited = false
+    var pages = 0
+    var sessionsSeen = 0
     do {
         if (!firstPage) delay(150)
         firstPage = false
+        pages++
         val response = onceMoreOnRateLimit {
             client.readRecords(
                 ReadRecordsRequest(
@@ -261,12 +265,25 @@ suspend fun readSleepByNight(
             break
         }
         for (session in response.records) {
+            sessionsSeen++
             val date = session.endTime.atZone(zone).toLocalDate()
             if (date < from || date > to) continue
-            val asleep = if (session.stages.isEmpty()) {
-                listOf(session.startTime to session.endTime)
-            } else {
-                session.stages.filter { it.stage !in NOT_ASLEEP }.map { it.startTime to it.endTime }
+            // Certains fournisseurs (Health Sync sur Huawei Watch GT4) classent tous les
+            // stades en "éveil" : le filtre tomberait sur zéro et la nuit disparaîtrait.
+            // Dans ce cas, on prend l'empan complet de la session comme sommeil plutôt
+            // que de jeter une nuit qui a bien été enregistrée comme telle.
+            val asleep = when {
+                session.stages.isEmpty() -> listOf(session.startTime to session.endTime)
+                else -> {
+                    val filtered = session.stages
+                        .filter { it.stage !in NOT_ASLEEP }
+                        .map { it.startTime to it.endTime }
+                    if (filtered.isEmpty()) {
+                        listOf(session.startTime to session.endTime)
+                    } else {
+                        filtered
+                    }
+                }
             }
             intervalsByDate.getOrPut(date) { mutableListOf() } += asleep
         }
@@ -276,6 +293,9 @@ suspend fun readSleepByNight(
     val result = intervalsByDate
         .mapValues { (_, intervals) -> mergedDuration(intervals) }
         .filterValues { !it.isZero }
+    Log.i(TAG, "Sommeil $from..$to : $pages page(s), $sessionsSeen session(s), " +
+        "${result.size} nuit(s) en ${System.currentTimeMillis() - runStart} ms " +
+        "(rateLimited=$rateLimited)")
     return PartialResult(result, rateLimited)
 }
 
