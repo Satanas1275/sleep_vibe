@@ -13,9 +13,11 @@ import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Mass
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
@@ -230,12 +232,18 @@ fun weekChunks(year: Int, zone: ZoneId = ZoneId.systemDefault()): List<Pair<Loca
  *  route à cause du rate limiter. */
 data class PartialResult<T>(val data: T, val rateLimited: Boolean)
 
-/** Durée de sommeil par nuit, la nuit étant rattachée à la date du réveil. */
+/** Durée de sommeil par nuit, la nuit étant rattachée à la date du réveil. Sur certains
+ *  appareils/fournisseurs, la pagination traverse la table entière et peut fournir des
+ *  pages vides en pagaille même quand la fenêtre est vide ou minuscule : on s'arrête
+ *  sur deux pages vides consécutives, on plafonne le nombre de pages par lecture, et si
+ *  le budget de temps est dépassé on renvoie le partiel déjà glané plutôt que rien. */
 suspend fun readSleepByNight(
     client: HealthConnectClient,
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
+    maxPages: Int = 250,
+    timeoutMs: Long = 45_000,
 ): PartialResult<Map<LocalDate, Duration>> {
     val runStart = System.currentTimeMillis()
     val start = from.minusDays(1).atStartOfDay(zone).toInstant()
@@ -248,51 +256,68 @@ suspend fun readSleepByNight(
     var rateLimited = false
     var pages = 0
     var sessionsSeen = 0
-    do {
-        if (!firstPage) delay(150)
-        firstPage = false
-        pages++
-        val pageStart = System.currentTimeMillis()
-        val response = onceMoreOnRateLimit {
-            client.readRecords(
-                ReadRecordsRequest(
-                    recordType = SleepSessionRecord::class,
-                    timeRangeFilter = TimeRangeFilter.between(start, end),
-                    pageToken = pageToken,
-                )
-            )
-        }
-        if (response == null) {
-            rateLimited = true
-            break
-        }
-        sessionsSeen += response.records.size
-        Log.i(TAG, "Sommeil $from..$to : page $pages (${response.records.size} sessions, " +
-            "cumulé $sessionsSeen) en ${System.currentTimeMillis() - pageStart} ms")
-        for (session in response.records) {
-            val date = session.endTime.atZone(zone).toLocalDate()
-            if (date < from || date > to) continue
-            // Certains fournisseurs (Health Sync sur Huawei Watch GT4) classent tous les
-            // stades en "éveil" : le filtre tomberait sur zéro et la nuit disparaîtrait.
-            // Dans ce cas, on prend l'empan complet de la session comme sommeil plutôt
-            // que de jeter une nuit qui a bien été enregistrée comme telle.
-            val asleep = when {
-                session.stages.isEmpty() -> listOf(session.startTime to session.endTime)
-                else -> {
-                    val filtered = session.stages
-                        .filter { it.stage !in NOT_ASLEEP }
-                        .map { it.startTime to it.endTime }
-                    if (filtered.isEmpty()) {
-                        listOf(session.startTime to session.endTime)
-                    } else {
-                        filtered
-                    }
+    var emptyStreak = 0
+    try {
+        withTimeout(timeoutMs) {
+            do {
+                if (!firstPage) delay(150)
+                firstPage = false
+                pages++
+                val pageStart = System.currentTimeMillis()
+                val response = onceMoreOnRateLimit {
+                    client.readRecords(
+                        ReadRecordsRequest(
+                            recordType = SleepSessionRecord::class,
+                            timeRangeFilter = TimeRangeFilter.between(start, end),
+                            pageToken = pageToken,
+                        )
+                    )
                 }
-            }
-            intervalsByDate.getOrPut(date) { mutableListOf() } += asleep
+                if (response == null) {
+                    rateLimited = true
+                    return@withTimeout
+                }
+                sessionsSeen += response.records.size
+                Log.i(TAG, "Sommeil $from..$to : page $pages (${response.records.size} sessions, " +
+                    "cumulé $sessionsSeen) en ${System.currentTimeMillis() - pageStart} ms")
+                for (session in response.records) {
+                    val date = session.endTime.atZone(zone).toLocalDate()
+                    if (date < from || date > to) continue
+                    // Certains fournisseurs (Health Sync sur Huawei Watch GT4) classent tous les
+                    // stades en "éveil" : le filtre tomberait sur zéro et la nuit disparaîtrait.
+                    // Dans ce cas, on prend l'empan complet de la session comme sommeil plutôt
+                    // que de jeter une nuit qui a bien été enregistrée comme telle.
+                    val asleep = when {
+                        session.stages.isEmpty() -> listOf(session.startTime to session.endTime)
+                        else -> {
+                            val filtered = session.stages
+                                .filter { it.stage !in NOT_ASLEEP }
+                                .map { it.startTime to it.endTime }
+                            if (filtered.isEmpty()) {
+                                listOf(session.startTime to session.endTime)
+                            } else {
+                                filtered
+                            }
+                        }
+                    }
+                    intervalsByDate.getOrPut(date) { mutableListOf() } += asleep
+                }
+                pageToken = response.pageToken
+                if (response.records.isEmpty()) {
+                    emptyStreak++
+                    // Deux pages vides d'affilée : le fournisseur balaie dans le vide
+                    // en plein milieu de nulle part, inutile de continuer.
+                    if (emptyStreak >= 2) return@withTimeout
+                } else {
+                    emptyStreak = 0
+                }
+                if (pages >= maxPages) return@withTimeout
+            } while (pageToken != null)
         }
-        pageToken = response.pageToken
-    } while (pageToken != null)
+    } catch (e: TimeoutCancellationException) {
+        // On a dépassé le budget de temps : on garde le partiel plutôt que de tout jeter.
+        rateLimited = true
+    }
 
     val result = intervalsByDate
         .mapValues { (_, intervals) -> mergedDuration(intervals) }

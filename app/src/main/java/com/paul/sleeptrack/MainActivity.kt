@@ -172,10 +172,11 @@ private fun SleepApp() {
                 else -> {
                     var accumulated = archived
                     var anyIssue = false
-                    fun warning() = if (anyIssue) {
-                        "Health Connect a limité ou ralenti certaines requêtes : des périodes plus anciennes n'ont peut-être pas encore été chargées. Réessaie plus tard pour compléter."
-                    } else {
-                        null
+                    var sleepExploded = false
+                    fun warning() = when {
+                        sleepExploded -> "Certaines semaines de sommeil contiennent des milliers de fragments (doublons de santé) impossibles à lire en entier — seules les nuits déjà trouvées sont affichées. Dans Health Connect, supprime les données sommeil de « Health Sync » puis resynchronise pour tout relire."
+                        anyIssue -> "Health Connect a limité ou ralenti certaines requêtes : des périodes plus anciennes n'ont peut-être pas encore été chargées. Réessaie plus tard pour compléter."
+                        else -> null
                     }
 
                     val baseResult = try {
@@ -212,6 +213,7 @@ private fun SleepApp() {
                             PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
                         }
                         Log.i("SleepTrack-HC", "Sommeil $from..$to : ${result.data.size} nuits, rateLimited=${result.rateLimited}")
+                        if (result.rateLimited && from.year == today.year) sleepExploded = true
                         anyIssue = anyIssue || result.rateLimited
                         accumulated = accumulated + HealthData(nights = result.data)
                         withContext(Dispatchers.IO) { Archive.merge(context, accumulated) }
