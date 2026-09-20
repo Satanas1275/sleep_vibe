@@ -305,7 +305,6 @@ suspend fun readStepsByDay(
     zone: ZoneId = ZoneId.systemDefault(),
 ): PartialResult<Map<LocalDate, Double>> = aggregateDaily(
     client, StepsRecord.COUNT_TOTAL, from, to, zone,
-    convert = { (it as Long).toDouble() },
 )
 
 /** Fréquence cardiaque au repos : moyenne BPM du jour. */
@@ -316,7 +315,6 @@ suspend fun readRestingHeartRate(
     zone: ZoneId = ZoneId.systemDefault(),
 ): PartialResult<Map<LocalDate, Double>> = aggregateDaily(
     client, RestingHeartRateRecord.BPM_AVG, from, to, zone,
-    convert = { it as Double },
 )
 
 /** Poids en kilos : moyenne des pesées du jour. Idéalement on n'aurait que la dernière,
@@ -328,8 +326,21 @@ suspend fun readWeight(
     zone: ZoneId = ZoneId.systemDefault(),
 ): PartialResult<Map<LocalDate, Double>> = aggregateDaily(
     client, WeightRecord.WEIGHT_AVG, from, to, zone,
-    convert = { (it as Mass).inKilograms },
 )
+
+/** Normalise une valeur d'agrégat à un Double sans présumer de son type boxé : le
+ *  fournisseur Health Connect (recevoir via Health Sync peut changer la métrique)
+ *  renvoie un Long quand la statistique tombe sur un entier (ex. BPM moyen), un
+ *  Double sinon, un Mass pour le poids — un `as Double` naïf fait planter la lecture
+ *  avec "java.lang.Long cannot be cast to java.lang.Double". */
+private fun toAggregateDouble(value: Any?): Double? = when (value) {
+    is Double -> value
+    is Long -> value.toDouble()
+    is Int -> value.toDouble()
+    is Float -> value.toDouble()
+    is Mass -> value.inKilograms
+    else -> null
+}
 
 /** Agrégation quotidienne d'une métrique sur la plage, découpée en sous-périodes d'au
  *  plus `bucketMonths` mois : chaque sous-période tient en un seul appel
@@ -341,7 +352,6 @@ private suspend fun aggregateDaily(
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId,
-    convert: (Any) -> Double?,
     bucketMonths: Long = 3,
 ): PartialResult<Map<LocalDate, Double>> {
     val result = mutableMapOf<LocalDate, Double>()
@@ -377,8 +387,7 @@ private suspend fun aggregateDaily(
             break
         }
         for (group in groups) {
-            val value = group.result[metric] ?: continue
-            val converted = convert(value) ?: continue
+            val converted = toAggregateDouble(group.result[metric]) ?: continue
             if (converted != 0.0) result[group.startTime.atZone(zone).toLocalDate()] = converted
         }
         bucketStart = bucketEnd
