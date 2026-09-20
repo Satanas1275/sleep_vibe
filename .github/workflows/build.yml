@@ -1,55 +1,55 @@
-name: Build
+# Compile l'app à chaque push. Le dépôt n'avait rien qui vérifie qu'il compile, et les
+# ML Kit GenAI APIs sont en Beta : un nom de classe qui bouge entre deux versions ne se
+# voit qu'ici. L'APK produit est gardé en artéfact, de quoi l'installer sans rien compiler
+# soi-même.
+name: Compilation
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
-  build:
+  assemble:
+    name: assembleDebug
     runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    timeout-minutes: 30
 
-      - name: Set up JDK 17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ubuntu-latest runners ship a preinstalled Android SDK (ANDROID_HOME already
-      # set). android-actions/setup-android tries to install the legacy "tools"
-      # package, which Google removed from the repository, so it fails outright.
-      # We just accept the licenses on the preinstalled SDK and let the Android
-      # Gradle Plugin auto-download whatever platform/build-tools it needs.
-      - name: Accept Android SDK licenses
-        run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
+      # Pas de setup-android ici : l'action installe le paquet `tools`, retiré du SDK
+      # depuis, et échoue dessus. L'image du runner fournit déjà le SDK avec ses licences
+      # acceptées (ANDROID_HOME) ; AGP télécharge lui-même la plateforme 36 si elle manque.
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Install required SDK platform
-        run: sdkmanager "platforms;android-36" "platform-tools" "build-tools;36.0.0" || true
+      # Pas de --stacktrace : sur une erreur de compilation il noie les lignes « e: »
+      # sous deux cents lignes de pile Gradle, qui n'apprennent rien.
+      - name: assembleDebug
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --console=plain 2>&1 | tee /tmp/build.log
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', 'gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+      # Republie les erreurs à la toute fin du log, où elles se lisent sans dérouler.
+      - name: Erreurs de compilation
+        if: failure()
+        run: |
+          echo "::group::Erreurs Kotlin"
+          grep -E '^e: |^error: |FAILURE: ' /tmp/build.log | head -n 60 || echo "(aucune ligne « e: » trouvée)"
+          echo "::endgroup::"
 
-      - name: Grant execute permission to gradlew
-        run: chmod +x gradlew
-
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
-
-      - name: Upload APK
+      - name: Garder l'APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: sleep-vibe-debug-apk
+          name: app-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error

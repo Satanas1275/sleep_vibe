@@ -372,6 +372,13 @@ private fun MainScreen(
 ) {
     val context = LocalContext.current
     var selected by remember(year) { mutableStateOf<LocalDate?>(null) }
+    // La période mise en avant par une question posée à la grille.
+    var asked by remember { mutableStateOf<GridQuery?>(null) }
+    // Le surlignage ne vaut que pour la métrique et l'année qu'il décrit. En le dérivant
+    // plutôt qu'en l'effaçant, changer d'onglet ou d'année à la main le fait disparaître
+    // tout seul — et la réponse à une question survit au changement qu'elle provoque.
+    val highlight = asked?.takeIf { it.metric == metric && year in it.from.year..it.to.year }
+    val nano = rememberNano()
     val currentYear = LocalDate.now().year
     val scale = remember(metric, data) { scaleFor(metric, data) }
     val series = remember(metric, data) { data.series(metric) }
@@ -434,12 +441,43 @@ private fun MainScreen(
                     onSelect = { selected = it },
                     colorAt = { day -> series[day]?.let(scale::colorOf) },
                     minPitch = minPitch,
+                    highlight = highlight?.range,
                 )
+                highlight?.let { query ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            highlightLabel(query),
+                            color = Palette.text,
+                            fontSize = 13.sp,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(onClick = { asked = null }) {
+                            Text("Tout revoir", color = Palette.muted, fontSize = 13.sp)
+                        }
+                    }
+                }
                 if (display.legend) Legend(metric, scale)
             }
         }
 
         selected?.let { day -> DayDetail(day, data, visibleMetrics) }
+
+        // Gemini Nano, en local. Tout ce bloc disparaît sur un appareil que le Prompt API
+        // ne couvre pas : l'app redevient alors exactement celle d'avant.
+        if (display.ai && nano.ready) {
+            Panel {
+                NanoAsk(nano, availableYears()) { query ->
+                    // Si la métrique demandée est masquée dans les réglages, on garde
+                    // l'onglet ouvert : la période reste celle qu'on a demandée, et le
+                    // surlignage s'applique quand même au lieu de ne rien faire.
+                    val target = if (query.metric in visibleMetrics) query.metric else metric
+                    if (target != metric) onMetric(target)
+                    if (query.from.year != year) onYear(query.from.year)
+                    asked = query.copy(metric = target)
+                    selected = null
+                }
+            }
+        }
 
         if (series.isEmpty()) {
             if (display.notes) EmptyNote("Aucune donnée « ${metric.label.lowercase()} » pour cette année.")
@@ -468,6 +506,28 @@ private fun MainScreen(
             data.steps.isNotEmpty() && data.nights.isNotEmpty()
         ) {
             Panel { CorrelationPanel(data, showNotes = display.notes) }
+        }
+
+        // Le résumé du dimanche est rédigé ici, pendant que l'app est au premier plan :
+        // AICore refuse l'inférence depuis un BroadcastReceiver, donc la notification ne
+        // saura que relire ce qui aura été préparé. On ne le prépare que depuis l'année en
+        // cours, seule à contenir les sept derniers jours.
+        LaunchedEffect(nano.ready, data, year) {
+            if (!display.ai || !nano.ready || demo) return@LaunchedEffect
+            if (year != currentYear || !Prefs.weeklyEnabled(context)) return@LaunchedEffect
+            if (!WeeklyBrief.isStale(context)) return@LaunchedEffect
+            nano.weeklyBrief(data)?.let { WeeklyBrief.store(context, it) }
+        }
+
+        if (display.ai) {
+            // Le commentaire vient après les chiffres : il les croise, il ne les annonce pas.
+            if (nano.ready && series.isNotEmpty()) {
+                Panel { NanoComment(nano, metric, data, display.goalMinutes, year) }
+            }
+            // Ne s'affiche que si Nano est supporté mais pas encore téléchargé.
+            if (nano.status == NanoStatus.DOWNLOADABLE || nano.status == NanoStatus.DOWNLOADING) {
+                Panel { NanoDownloadPanel(nano) }
+            }
         }
 
         val relevantMissing = remember(missing, visibleMetrics) {
@@ -664,6 +724,9 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     var backupStatus by remember { mutableStateOf<String?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val nano = rememberNano()
+    var briefReady by remember { mutableStateOf(WeeklyBrief.load(context) != null) }
+    var briefRunning by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
@@ -735,7 +798,7 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     }
 
     fun sampleWeekly() {
-        val message = Reminders.weeklyMessage(data)
+        val message = Reminders.weeklyMessage(context, data)
             ?: ("Ta semaine" to "Pas encore assez de nuits enregistrées pour un résumé.")
         Reminders.notify(
             context, Reminders.NOTIFICATION_SAMPLE, Reminders.CHANNEL_WEEKLY,
@@ -819,6 +882,41 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
                     }
                 }) {
                     Text("Voir un exemple de résumé", color = Palette.text)
+                }
+
+                // Le résumé rédigé par Gemini Nano ne peut pas être produit au moment de
+                // notifier : AICore refuse l'inférence en arrière-plan. Il se prépare donc
+                // ici, app ouverte, et la notification le relit dimanche.
+                if (weekly && nano.ready) {
+                    Text(
+                        if (briefReady) {
+                            "Un résumé rédigé par le modèle local est prêt. Il se périme au " +
+                                "bout de deux jours : rouvrir l'app avant dimanche le refait."
+                        } else {
+                            "Le résumé du dimanche sera gabarité, faute de texte préparé. " +
+                                "Le modèle local ne peut pas rédiger pendant que l'app est fermée."
+                        },
+                        color = Palette.muted,
+                        fontSize = 12.sp,
+                    )
+                    TextButton(
+                        onClick = {
+                            briefRunning = true
+                            scope.launch {
+                                val text = nano.weeklyBrief(data)
+                                if (text != null) WeeklyBrief.store(context, text)
+                                briefReady = text != null
+                                briefRunning = false
+                            }
+                        },
+                        enabled = !briefRunning,
+                    ) {
+                        Text(
+                            if (briefRunning) "Rédaction…" else "Préparer le résumé maintenant",
+                            color = Palette.muted,
+                            fontSize = 13.sp,
+                        )
+                    }
                 }
             }
         }
@@ -934,6 +1032,19 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
                 ) { on ->
                     Prefs.setFlag(context, Prefs.HIDE_SYNC_ERRORS, on)
                     hideSyncErrors = on
+                }
+                SettingSwitch(
+                    title = "Commentaires du modèle local",
+                    subtitle = if (nano.ready) {
+                        "Deux phrases rédigées sur le téléphone, et la barre de question"
+                    } else {
+                        "Ce téléphone ne fait pas tourner le modèle : sans effet ici"
+                    },
+                    checked = display.ai,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.SHOW_AI, on)
+                    display = Prefs.display(context)
+                    if (!on) WeeklyBrief.clear(context)
                 }
             }
         }
