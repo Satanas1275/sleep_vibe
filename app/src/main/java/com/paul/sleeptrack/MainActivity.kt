@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -82,6 +83,18 @@ private fun SleepApp() {
     val permissionLauncher = rememberLauncherForActivityResult(
         PermissionController.createRequestPermissionResultContract()
     ) { refreshKey++ }
+
+    // Retour (bouton ou geste) depuis les réglages : revient à l'écran principal au lieu
+    // d'éteindre l'app, en appliquant les mêmes effets que le bouton "Retour".
+    val closeSettings: () -> Unit = {
+        settings = false
+        visibleMetrics = Prefs.visibleMetrics(context)
+        display = Prefs.display(context)
+        if (metric !in visibleMetrics) metric = Metric.SLEEP
+        updateAllWidgets(context)
+        refreshKey++
+    }
+    BackHandler(enabled = settings) { closeSettings() }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { refreshKey++ }
 
@@ -283,15 +296,7 @@ private fun SleepApp() {
         when {
             settings -> SettingsScreen(
                 data = (state as? UiState.Ready)?.data ?: DataCache.load(context),
-                onBack = {
-                    settings = false
-                    visibleMetrics = Prefs.visibleMetrics(context)
-                    display = Prefs.display(context)
-                    if (metric !in visibleMetrics) metric = Metric.SLEEP
-                    updateAllWidgets(context)
-                    // Un import a pu enrichir l'archive : on relit.
-                    refreshKey++
-                },
+                onBack = closeSettings,
             )
             else -> when (val s = state) {
                 UiState.Loading -> Box(Modifier.fillMaxWidth().padding(top = 120.dp), Alignment.Center) {
@@ -332,7 +337,7 @@ private fun SleepApp() {
                     data = s.data,
                     missing = s.missing,
                     demo = demo,
-                    warning = s.warning,
+                    warning = if (Prefs.hideSyncErrors(context)) null else s.warning,
                     onRetry = { refreshKey++ },
                     onYear = { year = it },
                     onMetric = {
@@ -655,6 +660,7 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
     var visible by remember { mutableStateOf(Prefs.visibleMetrics(context)) }
     var widgetMetric by remember { mutableStateOf(Prefs.widgetMetric(context)) }
     var display by remember { mutableStateOf(Prefs.display(context)) }
+    var hideSyncErrors by remember { mutableStateOf(Prefs.hideSyncErrors(context)) }
     var backupStatus by remember { mutableStateOf<String?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -920,6 +926,14 @@ private fun SettingsScreen(data: HealthData, onBack: () -> Unit) {
                 ) { on ->
                     Prefs.setFlag(context, Prefs.SHOW_NOTES, on)
                     display = Prefs.display(context)
+                }
+                SettingSwitch(
+                    title = "Masquer les messages d'erreur de synchronisation",
+                    subtitle = "Cache les bandeaux « Health Connect a limité… » lors des lectures",
+                    checked = hideSyncErrors,
+                ) { on ->
+                    Prefs.setFlag(context, Prefs.HIDE_SYNC_ERRORS, on)
+                    hideSyncErrors = on
                 }
             }
         }

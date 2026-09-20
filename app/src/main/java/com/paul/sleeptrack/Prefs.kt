@@ -26,6 +26,7 @@ object Prefs {
     const val SHOW_NOTES = "show_notes"
     const val CELL_SIZE = "cell_size"
     const val LANDSCAPE_BIG = "landscape_big"
+    const val HIDE_SYNC_ERRORS = "hide_sync_errors"
 
     const val DEFAULT_EVENING_HOUR = 22
     const val DEFAULT_WEEKLY_HOUR = 19
@@ -63,6 +64,9 @@ object Prefs {
     fun setFlag(context: Context, key: String, value: Boolean) {
         of(context).edit().putBoolean(key, value).apply()
     }
+
+    /** Par défaut : les messages d'erreur de synchronisation sont masqués. */
+    fun hideSyncErrors(context: Context) = of(context).getBoolean(HIDE_SYNC_ERRORS, true)
 
     fun setCellSize(context: Context, dp: Int) {
         of(context).edit().putInt(CELL_SIZE, dp).apply()
