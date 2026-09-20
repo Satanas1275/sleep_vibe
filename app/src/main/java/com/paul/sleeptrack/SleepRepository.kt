@@ -1,8 +1,9 @@
 package com.paul.sleeptrack
 
+import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.aggregate.AggregateMetric
 import androidx.health.connect.client.permission.HealthPermission
-import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
@@ -10,6 +11,7 @@ import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import androidx.health.connect.client.units.Mass
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -20,7 +22,6 @@ import java.time.LocalDate
 import java.time.Period
 import java.time.ZoneId
 import kotlin.random.Random
-import kotlin.reflect.KClass
 
 const val PERMISSION_READ_HISTORY = "android.permission.health.READ_HEALTH_DATA_HISTORY"
 const val PERMISSION_READ_BACKGROUND = "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"
@@ -54,31 +55,48 @@ private val NOT_ASLEEP = setOf(
  *  l'exception varie selon la version/l'appareil (ni HealthConnectException ni
  *  IllegalStateException ne correspondent en pratique — testé), donc on se fie au
  *  texte plutôt qu'au type. */
-private fun isRateLimitMessage(e: Throwable): Boolean =
-    e.message?.contains("rate limit", ignoreCase = true) == true ||
-        e.message?.contains("quota", ignoreCase = true) == true
+private fun isRateLimitMessage(e: Throwable): Boolean {
+    val message = e.message?.lowercase() ?: ""
+    return message.contains("rate limit") ||
+        message.contains("quota") ||
+        message.contains("maximum number of requests") ||
+        message.contains("too many requests")
+}
 
-/** Essaie l'appel, et s'il se fait jeter pour rate limit, retente une fois après une
- *  pause avant d'abandonner. Renvoie null si les deux tentatives échouent pour rate
- *  limit — à l'appelant de garder ce qu'il a déjà accumulé plutôt que de tout perdre.
- *  Toute autre erreur est relancée telle quelle : ce n'est pas à cette fonction de la
- *  masquer. */
+/** Essaie l'appel, et s'il se fait jeter pour rate limit, retente avec une pause
+ *  croissante avant d'abandonner. Renvoie null si toutes les tentatives échouent
+ *  pour rate limit — à l'appelant de garder ce qu'il a déjà accumulé plutôt que de
+ *  tout perdre. Toute autre erreur est relancée telle quelle : ce n'est pas à cette
+ *  fonction de la masquer. */
 private suspend fun <T> onceMoreOnRateLimit(block: suspend () -> T): T? = try {
     block()
 } catch (e: CancellationException) {
     throw e
 } catch (e: Exception) {
     if (!isRateLimitMessage(e)) throw e
-    delay(2500)
+    Log.w(TAG, "Health Connect a limité les requêtes, nouvelle tentative dans 3s", e)
+    delay(3_000)
     try {
         block()
     } catch (e2: CancellationException) {
         throw e2
     } catch (e2: Exception) {
         if (!isRateLimitMessage(e2)) throw e2
-        null
+        Log.w(TAG, "Health Connect a encore limité les requêtes, dernière tentative dans 6s")
+        delay(6_000)
+        try {
+            block()
+        } catch (e3: CancellationException) {
+            throw e3
+        } catch (e3: Exception) {
+            if (!isRateLimitMessage(e3)) throw e3
+            Log.w(TAG, "Health Connect reste saturé, on garde le partiel déjà lu")
+            null
+        }
     }
 }
+
+private const val TAG = "SleepTrack-HC"
 
 /** Ce que renvoie une lecture : les données obtenues, et si le rate limiter de Health
  *  Connect a forcé à s'arrêter en cours de route (dans ce cas, les données sont
@@ -113,7 +131,7 @@ suspend fun loadHealthData(
     // types précis et forcerait des casts non vérifiés).
     data class FourResults(
         val nights: PartialResult<Map<LocalDate, Duration>>,
-        val steps: PartialResult<Map<LocalDate, Long>>,
+        val steps: PartialResult<Map<LocalDate, Double>>,
         val heart: PartialResult<Map<LocalDate, Double>>,
         val weight: PartialResult<Map<LocalDate, Double>>,
     )
@@ -137,12 +155,55 @@ suspend fun loadHealthData(
     return HealthLoadResult(
         data = HealthData(
             nights = results.nights.data,
-            steps = results.steps.data,
+            steps = results.steps.data.mapValues { it.value.toLong() },
             heart = results.heart.data,
             weight = results.weight.data,
         ),
         rateLimited = results.nights.rateLimited || results.steps.rateLimited ||
             results.heart.rateLimited || results.weight.rateLimited,
+    )
+}
+
+/**
+ * Lit uniquement les métriques agrégées (pas, cœur au repos, poids) sur toute la
+ * plage [from..to] — quelques appels `aggregateGroupByPeriod` par métrique plutôt
+ * qu'un balayage brut. Utilisé pour remplir toute une année en trois à quatre appels
+ * chacune au premier lancement ; le sommeil, lui, reste découpé en semaines.
+ */
+suspend fun loadAggregated(
+    client: HealthConnectClient,
+    granted: Set<String>,
+    from: LocalDate,
+    to: LocalDate,
+    zone: ZoneId = ZoneId.systemDefault(),
+): PartialResult<HealthData> {
+    val start = System.currentTimeMillis()
+    val s = if (PERMISSION_READ_STEPS in granted) {
+        readStepsByDay(client, from, to, zone)
+    } else {
+        PartialResult(emptyMap(), false)
+    }
+    delay(120)
+    val h = if (PERMISSION_READ_HEART in granted) {
+        readRestingHeartRate(client, from, to, zone)
+    } else {
+        PartialResult(emptyMap(), false)
+    }
+    delay(120)
+    val w = if (PERMISSION_READ_WEIGHT in granted) {
+        readWeight(client, from, to, zone)
+    } else {
+        PartialResult(emptyMap(), false)
+    }
+    Log.i(TAG, "Métriques agrégées $from..$to en ${System.currentTimeMillis() - start} ms " +
+        "(pas=${s.data.size}, cœur=${h.data.size}, poids=${w.data.size}, rateLimited=${s.rateLimited || h.rateLimited || w.rateLimited})")
+    return PartialResult(
+        data = HealthData(
+            steps = s.data.mapValues { it.value.toLong() },
+            heart = h.data,
+            weight = w.data,
+        ),
+        rateLimited = s.rateLimited || h.rateLimited || w.rateLimited,
     )
 }
 
@@ -242,24 +303,66 @@ suspend fun readStepsByDay(
     from: LocalDate,
     to: LocalDate,
     zone: ZoneId = ZoneId.systemDefault(),
-): PartialResult<Map<LocalDate, Long>> {
-    val out = mutableMapOf<LocalDate, Long>()
-    val limit = minOf(to.plusDays(1), LocalDate.now(zone).plusDays(1))
-    var chunkStart = from
+): PartialResult<Map<LocalDate, Double>> = aggregateDaily(
+    client, StepsRecord.COUNT_TOTAL, from, to, zone,
+    convert = { (it as Long).toDouble() },
+)
+
+/** Fréquence cardiaque au repos : moyenne BPM du jour. */
+suspend fun readRestingHeartRate(
+    client: HealthConnectClient,
+    from: LocalDate,
+    to: LocalDate,
+    zone: ZoneId = ZoneId.systemDefault(),
+): PartialResult<Map<LocalDate, Double>> = aggregateDaily(
+    client, RestingHeartRateRecord.BPM_AVG, from, to, zone,
+    convert = { it as Double },
+)
+
+/** Poids en kilos : moyenne des pesées du jour. Idéalement on n'aurait que la dernière,
+ *  mais les courbes du repo attendent une valeur par jour. */
+suspend fun readWeight(
+    client: HealthConnectClient,
+    from: LocalDate,
+    to: LocalDate,
+    zone: ZoneId = ZoneId.systemDefault(),
+): PartialResult<Map<LocalDate, Double>> = aggregateDaily(
+    client, WeightRecord.WEIGHT_AVG, from, to, zone,
+    convert = { (it as Mass).inKilograms },
+)
+
+/** Agrégation quotidienne d'une métrique sur la plage, découpée en sous-périodes d'au
+ *  plus `bucketMonths` mois : chaque sous-période tient en un seul appel
+ *  `aggregateGroupByPeriod`, donc une année entière ne coûte que quelques requêtes au
+ *  lieu du balayage par jour qui saturait le rate limiter de Health Connect. */
+private suspend fun aggregateDaily(
+    client: HealthConnectClient,
+    metric: AggregateMetric<*>,
+    from: LocalDate,
+    to: LocalDate,
+    zone: ZoneId,
+    convert: (Any) -> Double?,
+    bucketMonths: Long = 3,
+): PartialResult<Map<LocalDate, Double>> {
+    val result = mutableMapOf<LocalDate, Double>()
+    val limit = to.plusDays(1)
+    var bucketStart = from
     var first = true
     var rateLimited = false
-    while (chunkStart.isBefore(limit)) {
-        // Une année complète, c'est jusqu'à 12 appels d'affilée ; un petit espacement
-        // évite de déclencher le rate limiter interne de Health Connect quand cette
-        // lecture s'ajoute à celles du sommeil/cœur/poids dans le même chargement.
+    while (bucketStart.isBefore(limit)) {
+        // Un petit espacement évite de déclencher le rate limiter interne de Health
+        // Connect quand cette lecture s'ajoute à celles du sommeil/cœur/poids.
         if (!first) delay(120)
         first = false
-        val chunkEnd = minOf(chunkStart.plusMonths(1), limit)
+        val bucketEnd = minOf(bucketStart.plusMonths(bucketMonths), limit)
         val groups = onceMoreOnRateLimit {
             client.aggregateGroupByPeriod(
                 AggregateGroupByPeriodRequest(
-                    metrics = setOf(StepsRecord.COUNT_TOTAL),
-                    timeRangeFilter = TimeRangeFilter.between(chunkStart.atStartOfDay(), chunkEnd.atStartOfDay()),
+                    metrics = setOf(metric),
+                    timeRangeFilter = TimeRangeFilter.between(
+                        bucketStart.atStartOfDay(zone).toInstant(),
+                        bucketEnd.atStartOfDay(zone).toInstant(),
+                    ),
                     timeRangeSlicer = Period.ofDays(1),
                 )
             )
@@ -269,79 +372,12 @@ suspend fun readStepsByDay(
             break
         }
         for (group in groups) {
-            val count = group.result[StepsRecord.COUNT_TOTAL] ?: continue
-            if (count > 0) out[group.startTime.toLocalDate()] = count
+            val value = group.result[metric] ?: continue
+            val converted = convert(value) ?: continue
+            if (converted != 0.0) result[group.startTime.atZone(zone).toLocalDate()] = converted
         }
-        chunkStart = chunkStart.plusMonths(1)
+        bucketStart = bucketEnd
     }
-    return PartialResult(out, rateLimited)
-}
-
-/** Fréquence cardiaque au repos : moyenne des relevés du jour. */
-suspend fun readRestingHeartRate(
-    client: HealthConnectClient,
-    from: LocalDate,
-    to: LocalDate,
-    zone: ZoneId = ZoneId.systemDefault(),
-): PartialResult<Map<LocalDate, Double>> = readDailyMean(
-    client, RestingHeartRateRecord::class, from, to, zone,
-    at = { it.time }, value = { it.beatsPerMinute.toDouble() },
-)
-
-/** Poids en kilos : moyenne des pesées du jour. */
-suspend fun readWeight(
-    client: HealthConnectClient,
-    from: LocalDate,
-    to: LocalDate,
-    zone: ZoneId = ZoneId.systemDefault(),
-): PartialResult<Map<LocalDate, Double>> = readDailyMean(
-    client, WeightRecord::class, from, to, zone,
-    at = { it.time }, value = { it.weight.inKilograms },
-)
-
-// Cœur au repos et poids tiennent en quelques relevés par jour : la lecture brute
-// évite d'avoir à deviner le type de retour des agrégats.
-private suspend fun <T : Record> readDailyMean(
-    client: HealthConnectClient,
-    type: KClass<T>,
-    from: LocalDate,
-    to: LocalDate,
-    zone: ZoneId,
-    at: (T) -> Instant,
-    value: (T) -> Double,
-): PartialResult<Map<LocalDate, Double>> {
-    val start = from.atStartOfDay(zone).toInstant()
-    val end = to.plusDays(1).atStartOfDay(zone).toInstant()
-    val sums = mutableMapOf<LocalDate, Pair<Double, Int>>()
-
-    var pageToken: String? = null
-    var firstPage = true
-    var rateLimited = false
-    do {
-        if (!firstPage) delay(150)
-        firstPage = false
-        val response = onceMoreOnRateLimit {
-            client.readRecords(
-                ReadRecordsRequest(
-                    recordType = type,
-                    timeRangeFilter = TimeRangeFilter.between(start, end),
-                    pageToken = pageToken,
-                )
-            )
-        }
-        if (response == null) {
-            rateLimited = true
-            break
-        }
-        for (record in response.records) {
-            val date = at(record).atZone(zone).toLocalDate()
-            val (sum, n) = sums[date] ?: (0.0 to 0)
-            sums[date] = (sum + value(record)) to (n + 1)
-        }
-        pageToken = response.pageToken
-    } while (pageToken != null)
-
-    val result = sums.mapValues { (_, acc) -> acc.first / acc.second }
     return PartialResult(result, rateLimited)
 }
 

@@ -141,34 +141,56 @@ private fun SleepApp() {
                     }
                     state = UiState.Ready(data, REQUESTED_PERMISSIONS - granted, warning)
                 }
-                // Premier passage sur cette année cette session : on lit la semaine la
-                // plus récente en premier (affichage rapide), puis on comble le reste
-                // de l'année semaine par semaine en tâche de fond, chaque semaine lue
-                // venant enrichir l'écran et l'archive au fur et à mesure — plutôt que
-                // de faire attendre l'écran sur l'année entière (ou même un mois) d'un
-                // coup.
+                // Premier passage sur cette année cette session : on lit d'abord les
+                // métriques agrégées (pas, cœur, poids) sur toute l'année en quelques
+                // appels — c'est rapide et affiche tout de suite la moitié de l'écran.
+                // Puis on comble le sommeil semaine par semaine, la plus récente en
+                // premier (affichage rapide), chaque semaine lue venant enrichir
+                // l'écran et l'archive au fur et à mesure — plutôt que de faire
+                // attendre l'écran sur l'année entière (ou même un mois) d'un coup.
                 else -> {
                     var accumulated = archived
                     var anyIssue = false
+                    fun warning() = if (anyIssue) {
+                        "Health Connect a limité ou ralenti certaines requêtes : des périodes plus anciennes n'ont peut-être pas encore été chargées. Réessaie plus tard pour compléter."
+                    } else {
+                        null
+                    }
+
+                    val baseResult = try {
+                        withTimeout(60_000) {
+                            loadAggregated(
+                                client, granted,
+                                LocalDate.of(year, 1, 1),
+                                minOf(LocalDate.of(year, 12, 31), today),
+                            )
+                        }
+                    } catch (e: TimeoutCancellationException) {
+                        PartialResult(HealthData(), rateLimited = true)
+                    }
+                    anyIssue = baseResult.rateLimited
+                    accumulated += baseResult.data
+                    withContext(Dispatchers.IO) { Archive.merge(context, accumulated) }
+                    state = UiState.Ready(accumulated, REQUESTED_PERMISSIONS - granted, warning())
+
                     for ((from, to) in weekChunks(year)) {
                         val result = try {
-                            withTimeout(25_000) { loadHealthData(client, granted, from, to, concurrent = false) }
+                            withTimeout(45_000) { readSleepByNight(client, from, to) }
                         } catch (e: TimeoutCancellationException) {
-                            HealthLoadResult(HealthData(), rateLimited = true)
+                            PartialResult<Map<LocalDate, Duration>>(emptyMap(), rateLimited = true)
                         }
                         anyIssue = anyIssue || result.rateLimited
-                        accumulated += result.data
+                        accumulated = accumulated + HealthData(nights = result.data)
                         withContext(Dispatchers.IO) { Archive.merge(context, accumulated) }
                         if (year == today.year) {
                             DataCache.save(context, accumulated)
                             updateAllWidgets(context)
                         }
-                        val warning = if (anyIssue) {
-                            "Health Connect a limité ou ralenti certaines requêtes : des périodes plus anciennes n'ont peut-être pas encore été chargées. Réessaie plus tard pour compléter."
-                        } else {
-                            null
-                        }
-                        state = UiState.Ready(accumulated, REQUESTED_PERMISSIONS - granted, warning)
+                        state = UiState.Ready(accumulated, REQUESTED_PERMISSIONS - granted, warning())
+                        // Inutile de continuer à taper Health Connect si le rate
+                        // limiter a déjà dit stop : on garde ce qui est lu et on laisse
+                        // l'utilisateur relancer à la prochaine ouverture.
+                        if (result.rateLimited) break
                     }
                     fetchedYears.value = fetchedYears.value + year
                 }
